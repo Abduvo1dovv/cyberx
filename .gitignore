@@ -40,11 +40,14 @@ htmlcov/
 node_modules/
 .node_modules.lock
 .grok/
-public/__grok/
-screenshots/
-artifacts/
+public/
 server/
 scripts/
+migrations/
+src/components/
+src/lib/
+src/routes/
+src/styles.css
 package.json
 package-lock.json
 vite.config.ts
@@ -52,3 +55,5 @@ tsconfig.json
 eslint.config.mjs
 .prettierrc
 AGENTS.md
+screenshots/
+artifacts/
