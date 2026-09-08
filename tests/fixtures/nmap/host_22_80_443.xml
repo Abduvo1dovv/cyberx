@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -n -Pn -sT -p 22,80,443 10.10.11.23" start="1700000200" version="7.94" xmloutputversion="1.05">
+  <scaninfo type="connect" protocol="tcp" numservices="3" services="22,80,443"/>
+  <host>
+    <status state="up" reason="user-set"/>
+    <address addr="10.10.11.23" addrtype="ipv4"/>
+    <address addr="00:11:22:33:44:55" addrtype="mac" vendor="VMware"/>
+    <hostnames>
+      <hostname name="www.box.htb" type="user"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack"/>
+        <service name="ssh" product="OpenSSH" version="8.9p1" method="probed" conf="10"/>
+      </port>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="Apache httpd" version="2.4.52" method="probed" conf="10"/>
+      </port>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="Apache httpd" version="2.4.52" tunnel="ssl" method="probed" conf="10"/>
+      </port>
+    </ports>
+  </host>
+  <runstats><finished time="1700000204" elapsed="4.00" exit="success"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>

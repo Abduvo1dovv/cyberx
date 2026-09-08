@@ -1,0 +1,9 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 200,
+  "headers": {
+    "content-type": "text/html"
+  },
+  "title": "No Server",
+  "body": "<html><head><title>No Server</title></head><body>ok</body></html>"
+}

@@ -1,0 +1,10 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 200,
+  "headers": {
+    "content-type": "text/html"
+  },
+  "truncated": true,
+  "title": "Huge",
+  "body": "<html><title>Huge</title><body>partial"
+}

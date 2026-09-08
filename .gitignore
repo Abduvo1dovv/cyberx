@@ -1,0 +1,54 @@
+# secrets / local operator files
+.env
+.env.*
+!.env.example
+*.ovpn
+*.ovpn.*
+*.key
+*.pem
+*.crt
+*.p12
+id_rsa*
+vpn/
+
+# runtime data
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.coverage
+htmlcov/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Grok / JS platform chrome (not CyberX)
+node_modules/
+.node_modules.lock
+.grok/
+public/__grok/
+screenshots/
+artifacts/
+server/
+scripts/
+package.json
+package-lock.json
+vite.config.ts
+tsconfig.json
+eslint.config.mjs
+.prettierrc
+AGENTS.md

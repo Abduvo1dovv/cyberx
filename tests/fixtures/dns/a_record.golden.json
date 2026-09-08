@@ -1,0 +1,40 @@
+[
+  {
+    "predicate": "dns.record",
+    "subject_hint": "domain:box.htb",
+    "object": {
+      "type": "A",
+      "name": "box.htb",
+      "value": "10.10.11.23"
+    }
+  },
+  {
+    "predicate": "host.address",
+    "subject_hint": "host:ipv4:10.10.11.23",
+    "object": "10.10.11.23"
+  },
+  {
+    "predicate": "host.hostname",
+    "subject_hint": "host:ipv4:10.10.11.23",
+    "object": "box.htb"
+  },
+  {
+    "predicate": "dns.record",
+    "subject_hint": "domain:box.htb",
+    "object": {
+      "type": "AAAA",
+      "name": "box.htb",
+      "value": "2001:db8::1"
+    }
+  },
+  {
+    "predicate": "host.address",
+    "subject_hint": "host:ipv6:2001:db8::1",
+    "object": "2001:db8::1"
+  },
+  {
+    "predicate": "host.hostname",
+    "subject_hint": "host:ipv6:2001:db8::1",
+    "object": "box.htb"
+  }
+]

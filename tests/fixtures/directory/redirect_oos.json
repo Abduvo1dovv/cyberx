@@ -1,0 +1,15 @@
+{
+  "base_url": "http://10.10.11.23/",
+  "status": "ok",
+  "wildcard_detected": false,
+  "paths": [
+    {
+      "path": "/out",
+      "status": 302,
+      "classification": "redirect",
+      "redirect": "https://evil.example/steal",
+      "out_of_scope": true,
+      "followed": false
+    }
+  ]
+}

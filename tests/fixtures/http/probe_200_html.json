@@ -1,0 +1,10 @@
+{
+  "url": "http://10.10.11.23/",
+  "final_url": "http://10.10.11.23/",
+  "status": 200,
+  "headers": {
+    "content-type": "text/html; charset=utf-8"
+  },
+  "body": "<html><head><title>Box Portal</title></head><body><a href=\"/login\">Login</a><form method=\"POST\" action=\"/login\"><input name=\"username\"><input name=\"password\"></form></body></html>",
+  "body_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

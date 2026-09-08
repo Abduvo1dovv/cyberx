@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sV 10.10.11.23" start="1">
+  <host>
+    <status state="up" reason="echo-reply"/>
+    <address addr="10.10.11.23" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="box.htb" type="PTR"/>
+    </hostnames>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack"/>
+        <service name="ssh" product="OpenSSH" version="8.9p1" extrainfo="Ubuntu"/>
+      </port>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="nginx" version="1.24.0"/>
+      </port>
+      <port protocol="tcp" portid="443">
+        <state state="filtered" reason="no-response"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

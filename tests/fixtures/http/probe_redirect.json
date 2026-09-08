@@ -1,0 +1,9 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 302,
+  "title": "",
+  "headers": {
+    "location": "http://10.10.11.23/login"
+  },
+  "redirect": "http://10.10.11.23/login"
+}

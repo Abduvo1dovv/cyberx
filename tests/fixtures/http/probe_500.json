@@ -1,0 +1,8 @@
+{
+  "url": "http://10.10.11.23/boom",
+  "status": 500,
+  "headers": {
+    "content-type": "text/html"
+  },
+  "body": "<html><title>Internal Error</title></html>"
+}

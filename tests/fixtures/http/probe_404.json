@@ -1,0 +1,7 @@
+{
+  "url": "http://10.10.11.23/missing",
+  "status": 404,
+  "headers": {
+    "content-type": "text/html"
+  }
+}

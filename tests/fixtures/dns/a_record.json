@@ -1,0 +1,7 @@
+{
+  "fqdn": "box.htb",
+  "records": [
+    {"type": "A", "name": "box.htb", "value": "10.10.11.23"},
+    {"type": "AAAA", "name": "box.htb", "value": "2001:db8::1"}
+  ]
+}

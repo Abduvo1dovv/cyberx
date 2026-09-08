@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -n 10.10.11.23" start="1700000500" version="7.94" xmloutputversion="1.05">
+  <taskbegin task="SYN Stealth Scan" time="1700000500"/>
+  <taskend task="SYN Stealth Scan" time="1700000501"/>
+  <host>
+    <status state="up" reason="echo-reply"/>
+    <address addr="10.10.11.23" addrtype="ipv4"/>
+    <os>
+      <osmatch name="Linux 5.15" accuracy="95"/>
+    </os>
+    <uptime seconds="1000" lastboot="sometime"/>
+    <trace>
+      <hop ttl="1" ipaddr="10.10.11.1"/>
+    </trace>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack"/>
+        <service name="ssh" product="OpenSSH" version="8.9p1" ostype="Linux" method="probed" conf="10"/>
+        <script id="ssh-hostkey" output="ignored"/>
+      </port>
+    </ports>
+    <smurf responses="0"/>
+  </host>
+  <runstats><finished time="1700000502" elapsed="2.00" exit="success"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>

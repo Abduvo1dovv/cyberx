@@ -1,0 +1,8 @@
+{
+  "url": "http://10.10.11.23/admin",
+  "status": 401,
+  "headers": {
+    "www-authenticate": "Basic realm=\"admin\"",
+    "content-type": "text/html"
+  }
+}

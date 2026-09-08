@@ -1,0 +1,19 @@
+{
+  "fqdn": "box.htb",
+  "status": "ok",
+  "subdomains": ["WWW.box.htb", "www.box.htb", "mail.box.htb", "admin.box.htb"],
+  "details": [
+    {
+      "fqdn": "www.box.htb",
+      "records": [{"type": "A", "name": "www.box.htb", "value": "10.10.10.10"}]
+    },
+    {
+      "fqdn": "mail.box.htb",
+      "records": [{"type": "CNAME", "name": "mail.box.htb", "value": "box.htb"}]
+    }
+  ],
+  "negative": [
+    {"fqdn": "dev.box.htb", "status": "nxdomain"},
+    {"fqdn": "evil.example", "status": "out_of_scope"}
+  ]
+}

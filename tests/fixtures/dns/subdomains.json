@@ -1,0 +1,4 @@
+{
+  "fqdn": "box.htb",
+  "subdomains": ["www.box.htb", "admin.box.htb"]
+}

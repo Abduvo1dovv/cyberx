@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyberx"
+version = "1.0.0"
+description = "CyberX v1 CTF Edition — recon/intelligence (no exploitation)"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+cyberx = "cyberx.main:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cyberx*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "requires_nmap: live nmap binary tests (opt-in via CYBERX_LIVE_NMAP=1)",
+  "requires_http: live HTTP tests (opt-in via CYBERX_LIVE_HTTP=1)",
+  "requires_dns: live DNS resolver tests (opt-in via CYBERX_LIVE_DNS=1)",
+  "requires_network: live local interface inspect (opt-in via CYBERX_LIVE_NETWORK=1)",
+  "requires_grok: live Grok API tests (opt-in via CYBERX_LIVE_GROK=1)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

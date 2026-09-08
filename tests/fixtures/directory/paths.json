@@ -1,0 +1,9 @@
+{
+  "base_url": "http://10.10.11.23/",
+  "paths": [
+    {"path": "/admin", "status": 401},
+    {"path": "/login", "status": 200},
+    {"path": "/robots.txt", "status": 200},
+    {"path": "/nope", "status": 404}
+  ]
+}

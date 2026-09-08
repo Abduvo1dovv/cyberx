@@ -1,0 +1,15 @@
+{
+  "base_url": "http://10.10.11.23/",
+  "status": "ok",
+  "wildcard_detected": false,
+  "paths": [
+    {"path": "/admin", "status": 200, "classification": "found", "title": "Admin"},
+    {"path": "/api", "status": 200, "classification": "found", "content_type": "application/json"},
+    {"path": "/backup", "status": 403, "classification": "forbidden"},
+    {"path": "/uploads", "status": 301, "classification": "redirect", "redirect": "http://10.10.11.23/login", "out_of_scope": false},
+    {"path": "/secret", "status": 401, "classification": "unauthorized"},
+    {"path": "/broken", "status": 500, "classification": "server_error"},
+    {"path": "/missing", "status": 404, "classification": "not_found"},
+    {"path": "/admin", "status": 200, "classification": "found"}
+  ]
+}

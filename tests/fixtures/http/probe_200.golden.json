@@ -1,0 +1,54 @@
+[
+  {
+    "predicate": "url.seen",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": "url:http://10.10.11.23:80/"
+  },
+  {
+    "predicate": "http.status",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": 200
+  },
+  {
+    "predicate": "endpoint.seen",
+    "subject_hint": "ep:GET:url:http://10.10.11.23:80/",
+    "object": {
+      "method": "GET",
+      "url": "url:http://10.10.11.23:80/"
+    }
+  },
+  {
+    "predicate": "http.title",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": "Stub Host"
+  },
+  {
+    "predicate": "http.header",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": {
+      "name": "server",
+      "value": "nginx"
+    }
+  },
+  {
+    "predicate": "http.tech",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": {
+      "product": "nginx",
+      "source": "header"
+    }
+  },
+  {
+    "predicate": "http.header",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": {
+      "name": "content-type",
+      "value": "text/html"
+    }
+  },
+  {
+    "predicate": "http.body_hash",
+    "subject_hint": "url:http://10.10.11.23:80/",
+    "object": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+]

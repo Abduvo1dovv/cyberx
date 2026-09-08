@@ -1,0 +1,8 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 200,
+  "headers": {
+    "content-type": "text/html"
+  },
+  "body": "<html><title>Broken<title><div><a href=/login>Login<a href='https://evil.example/x'>"
+}

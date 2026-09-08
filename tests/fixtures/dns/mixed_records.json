@@ -1,0 +1,13 @@
+{
+  "fqdn": "box.htb",
+  "status": "ok",
+  "records": [
+    {"type": "A", "name": "box.htb", "value": "10.10.10.10"},
+    {"type": "AAAA", "name": "box.htb", "value": "2001:db8::10"},
+    {"type": "CNAME", "name": "www.box.htb", "value": "box.htb"},
+    {"type": "MX", "name": "box.htb", "value": "mail.box.htb", "preference": "10"},
+    {"type": "NS", "name": "box.htb", "value": "ns1.box.htb"},
+    {"type": "TXT", "name": "box.htb", "value": "v=spf1 -all"},
+    {"type": "A", "name": "box.htb", "value": "10.10.10.11"}
+  ]
+}

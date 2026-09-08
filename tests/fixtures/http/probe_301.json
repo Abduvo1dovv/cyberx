@@ -1,0 +1,8 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 301,
+  "headers": {
+    "location": "http://10.10.11.23/app"
+  },
+  "redirect": "http://10.10.11.23/app"
+}

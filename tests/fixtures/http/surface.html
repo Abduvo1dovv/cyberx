@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Box Portal</title>
+  <base href="http://10.10.11.23/">
+</head>
+<body>
+  <a href="/login">Login</a>
+  <a href="/api/">API</a>
+  <a href="/admin">Admin</a>
+  <a href="/profile">Profile</a>
+  <a href="/search?q=box#top">Search</a>
+  <a href="http://10.10.11.23/login">Abs login</a>
+  <a href="/login">duplicate</a>
+  <a href="https://outside.example/out">leave</a>
+  <a href="javascript:alert(1)">js</a>
+  <a href="mailto:ops@box.htb">mail</a>
+  <a href="data:text/plain,hi">data</a>
+  <a href="blob:http://10.10.11.23/abc">blob</a>
+  <form method="GET" action="/search">
+    <input type="text" name="q">
+  </form>
+  <form method="POST" action="/login">
+    <input type="text" name="username">
+    <input type="password" name="password">
+  </form>
+</body>
+</html>

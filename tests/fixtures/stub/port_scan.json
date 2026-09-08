@@ -1,0 +1,9 @@
+{
+  "action_type": "port_scan",
+  "target": "10.10.11.23",
+  "ports": [
+    {"number": 22, "protocol": "tcp", "state": "open"},
+    {"number": 80, "protocol": "tcp", "state": "open"},
+    {"number": 443, "protocol": "tcp", "state": "open"}
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "url": "http://10.10.11.23/",
+  "endpoints": [
+    {"method": "GET", "path": "/login"},
+    {"method": "POST", "path": "/login", "params": [{"name": "username", "location": "body"}, {"name": "password", "location": "body"}], "auth": "http_form"}
+  ]
+}

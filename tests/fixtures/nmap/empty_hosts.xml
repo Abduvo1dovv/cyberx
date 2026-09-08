@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap 10.10.11.23" start="1">
+</nmaprun>

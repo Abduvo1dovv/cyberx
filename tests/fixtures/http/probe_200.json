@@ -1,0 +1,10 @@
+{
+  "url": "http://10.10.11.23/",
+  "status": 200,
+  "title": "Stub Host",
+  "headers": {
+    "server": "nginx",
+    "content-type": "text/html"
+  },
+  "body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

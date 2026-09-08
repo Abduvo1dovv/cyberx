@@ -1,0 +1,67 @@
+[
+  {
+    "predicate": "host.alive",
+    "subject_hint": "host:ipv4:10.10.11.23",
+    "object": true
+  },
+  {
+    "predicate": "host.address",
+    "subject_hint": "host:ipv4:10.10.11.23",
+    "object": "10.10.11.23"
+  },
+  {
+    "predicate": "host.hostname",
+    "subject_hint": "host:ipv4:10.10.11.23",
+    "object": "box.htb"
+  },
+  {
+    "predicate": "port.state",
+    "subject_hint": "port:host:ipv4:10.10.11.23:tcp:22",
+    "object": "open"
+  },
+  {
+    "predicate": "service.name",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:22",
+    "object": "ssh"
+  },
+  {
+    "predicate": "service.product",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:22",
+    "object": "OpenSSH"
+  },
+  {
+    "predicate": "service.version",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:22",
+    "object": "8.9p1"
+  },
+  {
+    "predicate": "service.banner",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:22",
+    "object": "Ubuntu"
+  },
+  {
+    "predicate": "port.state",
+    "subject_hint": "port:host:ipv4:10.10.11.23:tcp:80",
+    "object": "open"
+  },
+  {
+    "predicate": "service.name",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:80",
+    "object": "http"
+  },
+  {
+    "predicate": "service.product",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:80",
+    "object": "nginx"
+  },
+  {
+    "predicate": "service.version",
+    "subject_hint": "svc:port:host:ipv4:10.10.11.23:tcp:80",
+    "object": "1.24.0"
+  },
+  {
+    "predicate": "port.state",
+    "subject_hint": "port:host:ipv4:10.10.11.23:tcp:443",
+    "object": "filtered"
+  }
+]
