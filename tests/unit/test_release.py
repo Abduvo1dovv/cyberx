@@ -44,6 +44,32 @@ def test_doctor_does_not_print_api_key(capsys) -> None:
     assert "VPN" in out
 
 
+def test_diagnose_does_not_print_secrets_or_scan(monkeypatch, capsys) -> None:
+    from cyberx.domain.models.network import NetworkContext
+
+    class _Fake:
+        def resolve(self, target: str) -> NetworkContext:
+            return NetworkContext.unavailable(target, diagnostic="fixture")
+
+    monkeypatch.setattr("cyberx.network.resolver.NetworkResolver", lambda: _Fake())
+    assert (
+        main(
+            [
+                "--diagnose",
+                "10.10.11.23",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "DIAGNOSE" in out
+    assert "10.10.11.23" in out
+    assert "normalized" in out
+    assert "nmap_timeout_s" in out
+    assert "No routes" in out
+    assert "super-secret" not in out
+
+
 def test_network_flag_does_not_scan(monkeypatch, capsys) -> None:
     from cyberx.domain.models.network import NetworkContext
 

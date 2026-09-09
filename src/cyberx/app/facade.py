@@ -416,36 +416,39 @@ class OperatorFacade:
     def get_current_action(self, mission_id: str) -> CurrentActionView:
         traces = self._engine.traces(mission_id)
         last = self._last_cycle.get(mission_id)
+        diag = self._engine.action_diagnostic(mission_id)
         if not traces:
             return CurrentActionView(
                 action_type=last.selected_action_type if last else None,
-                target=None,
+                target=diag.get("target") or None,
                 rationale=last.rationale if last else "",
                 score=None,
                 coverage_key=None,
                 policy_verdict=last.execution_status if last else None,
                 execution_status=last.execution_status if last else None,
                 last_result=last.execution_status if last else None,
+                error_code=diag.get("reason") or None,
+                attempt=diag.get("attempt") or None,
+                retryable=diag.get("retryable") or None,
             )
         trace = traces[-1]
         score = None
         if trace.candidates:
             score = trace.candidates[0].get("score")
-        target = None
-        decision = None
-        if last is not None:
-            decision = last
+        decision = last
+        status = decision.execution_status if decision is not None else trace.execution_status
         return CurrentActionView(
-            action_type=trace.selected_type,
-            target=target,
+            action_type=trace.selected_type or diag.get("action_type") or None,
+            target=diag.get("target") or None,
             rationale=trace.rationale,
             score=score,
             coverage_key=trace.selected_coverage_key,
             policy_verdict=trace.policy_verdict,
-            execution_status=trace.execution_status,
-            last_result=(
-                decision.execution_status if decision is not None else trace.execution_status
-            ),
+            execution_status=status,
+            last_result=status,
+            error_code=diag.get("reason") or None,
+            attempt=diag.get("attempt") or None,
+            retryable=diag.get("retryable") or None,
         )
 
     def get_dashboard(self, mission_id: str) -> DashboardView:

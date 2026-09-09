@@ -28,6 +28,7 @@ class CandidateAction(DomainModel):
     cost: float = 0.5
     catalog_index: int = 0
     timeout_s: int = 30
+    source: str = "planner"
 
 
 class ScoredAction(DomainModel):

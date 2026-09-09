@@ -172,4 +172,3 @@ def test_ai_is_isolated_and_cannot_execute() -> None:
     for path in _iter_py("brain"):
         text = path.read_text(encoding="utf-8")
         assert "cyberx.ai.providers" not in text
-

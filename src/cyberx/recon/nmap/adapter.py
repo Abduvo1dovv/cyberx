@@ -12,8 +12,8 @@ from cyberx.domain.ids import PREFIX_ARTIFACT, PREFIX_TOOL_RUN, new_id
 from cyberx.domain.models.actions import Action
 from cyberx.ports.events import DomainEvent, EventSink, EventType, NullEventSink, emit_safe
 from cyberx.ports.execution import ExecutionContext, RawArtifact
-from cyberx.recon.nmap.argv import NMAP_ACTION_TYPES, build_nmap_argv
-from cyberx.recon.nmap.process import CommandResult, ProcessRunner
+from cyberx.recon.nmap.argv import NMAP_ACTION_TYPES, build_nmap_argv, drop_source_address
+from cyberx.recon.nmap.process import CommandResult, ProcessRunner, looks_like_process_error
 
 
 class NmapAdapter:
@@ -114,6 +114,16 @@ class NmapAdapter:
             ),
         )
         result = self._runner.run(argv, timeout_s=timeout_s, cwd=str(workdir))
+        if looks_like_process_error(result.stderr) and not result.timed_out and "-S" in argv:
+            fallback = drop_source_address(argv)
+            if fallback != argv:
+                retry = self._runner.run(fallback, timeout_s=timeout_s, cwd=str(workdir))
+                if not retry.timed_out and (
+                    retry.exit_code in {0, None} or not looks_like_process_error(retry.stderr)
+                ):
+                    argv = fallback
+                    result = retry
+                    self._last_argv = argv
         self._last_result = result
         artifact = self._artifact(action, tool_run_id, xml_path, art_dir, result)
         self._emit_finished(action, result, artifact)

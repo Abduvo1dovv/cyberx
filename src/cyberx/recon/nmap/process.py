@@ -6,6 +6,40 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+PROCESS_ERROR_MARKERS = (
+    "could not bind",
+    "failed to bind",
+    "can't bind",
+    "cannot bind",
+    "permission denied",
+    "operation not permitted",
+    "requires root",
+    "root privileges",
+    "need to be root",
+    "you requested a scan type which requires root",
+)
+
+
+def stderr_text(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return str(raw)
+
+
+def looks_like_process_error(stderr: bytes | str | None) -> bool:
+    text = stderr_text(stderr).lower()
+    return any(marker in text for marker in PROCESS_ERROR_MARKERS)
+
+
+def compact_stderr(stderr: bytes | str | None, *, limit: int = 200) -> str:
+    text = stderr_text(stderr).replace("\r", "\n").strip()
+    if not text:
+        return ""
+    line = text.split("\n", 1)[0].strip()
+    return line[:limit]
+
 
 @dataclass
 class CommandResult:

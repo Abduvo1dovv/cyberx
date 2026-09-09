@@ -2,6 +2,7 @@
 
 from cyberx.brain.context import BrainContextBuilder, context_hash
 from cyberx.brain.decision import DecisionEngine
+from cyberx.brain.dedup import merge_candidates
 from cyberx.brain.facade import Brain
 from cyberx.brain.hypotheses import HypothesisEngine
 from cyberx.brain.planner import Planner
@@ -29,4 +30,5 @@ __all__ = [
     "Planner",
     "ScoredAction",
     "context_hash",
+    "merge_candidates",
 ]

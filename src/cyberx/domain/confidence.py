@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from cyberx.domain.errors import DomainValidationError
 
+# AI-proposed hypotheses are advisory. They must not become high-confidence
+# facts without later non-AI evidence. This is an epistemic safety boundary,
+# not a scoring knob. SPEC §3 / §8.4 / §11.
+AI_HYPOTHESIS_CONFIDENCE_CAP = 0.4
+
 
 def validate_confidence(value: float, *, field: str = "confidence") -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -23,7 +28,7 @@ def clamp01(value: float) -> float:
 
 
 def apply_supporting(confidence: float, reliability: float) -> float:
-    """c := 1 - (1 - c) * (1 - r)"""
+    """c := 1 - (1 - c) * (1 - r). Non-AI evidence may raise confidence above the AI cap."""
     c = validate_confidence(confidence)
     r = validate_confidence(reliability, field="reliability")
     return clamp01(1.0 - (1.0 - c) * (1.0 - r))

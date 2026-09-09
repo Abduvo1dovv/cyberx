@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager
-from typing import Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from cyberx.domain.models.actions import Action, ActionResult, ToolRun
 from cyberx.domain.models.assets import Asset
@@ -175,6 +175,8 @@ class ActionRepo(Protocol):
 class ArtifactStore(Protocol):
     def put(self, artifact: RawArtifact) -> str: ...
 
+    def get_body(self, artifact_id: str, mission_id: str) -> bytes: ...
+
     def save_meta(self, artifact: RawArtifact, path: str | None) -> None: ...
 
     def get_meta(self, artifact_id: str) -> ArtifactMeta | None: ...
@@ -204,6 +206,48 @@ class Persistence(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class EnginePersistence(Protocol):
+    """Capabilities MissionEngine requires when a store is attached.
+
+    In-memory missions pass None. SQLite implements this Protocol structurally.
+    Optional duck-typing (hasattr / store_has) is forbidden in the engine.
+    """
+
+    def transaction(self) -> AbstractContextManager[None]: ...
+
+    def persist_world(self, world: Any) -> None: ...
+
+    def resume_world(self, mission_id: str) -> Any: ...
+
+    def save_runtime(
+        self,
+        mission_id: str,
+        consecutive_failures: int,
+        stall_cycles: int,
+        last_revision: int,
+        last_evidence_count: int,
+    ) -> None: ...
+
+    def get_runtime(self, mission_id: str) -> tuple[int, int, int, int]: ...
+
+    def save_action(self, action: Action) -> None: ...
+
+    def save_result(self, result: ActionResult) -> None: ...
+
+    def save_tool_run(self, run: ToolRun) -> None: ...
+
+    def put(self, artifact: RawArtifact) -> str: ...
+
+    def insert_observation(self, observation: Observation) -> bool: ...
+
+    def insert_evidence(self, evidence: Evidence) -> bool: ...
+
+    def append_timeline(self, event: TimelineEvent) -> None: ...
+
+    def save_decision_trace(self, mission_id: str, iteration: int, payload: str) -> None: ...
+
+
 def iter_protocol_names() -> Iterator[str]:
     yield from (
         "MissionRepo",
@@ -213,4 +257,5 @@ def iter_protocol_names() -> Iterator[str]:
         "ArtifactStore",
         "AuditRepo",
         "Persistence",
+        "EnginePersistence",
     )

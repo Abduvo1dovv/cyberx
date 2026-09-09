@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from cyberx.brain.locators import network_blocks_ip
 from cyberx.brain.types import Decision, ScoredAction
 from cyberx.domain.ids import PREFIX_DECISION, new_id
 from cyberx.domain.models.findings import BrainContext
@@ -50,11 +51,9 @@ class DecisionEngine:
             reason = "no_actions"
             if not ctx.gaps:
                 reason = "objectives_met"
-            net = ctx.network or {}
             extra = ""
-            reach = net.get("reachability") or ""
-            if reach in {"ROUTE_MISSING", "UNREACHABLE", "BLOCKED"}:
-                extra = f" reachability={reach}"
+            if network_blocks_ip(ctx):
+                extra = f" reachability={ctx.network.reachability}"
             return Decision(
                 decision_id=new_id(PREFIX_DECISION),
                 kind="stop",

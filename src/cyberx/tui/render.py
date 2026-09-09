@@ -69,18 +69,18 @@ def render_scope(scope: ScopeReviewView, color: bool = False) -> str:
 def render_mission_header(mission: MissionStatusView, color: bool = False) -> str:
     status = _c(color, _status_color(mission.status), mission.status)
     elapsed = int(mission.elapsed_s)
-    return "\n".join(
-        [
-            f"Mission  {mission.name}  [{mission.mission_id}]",
-            f"Target   {mission.target}  ({mission.target_kind})",
-            f"Mode     {mission.mode}   provider={mission.provider}"
-            f"   policy={mission.policy_profile}",
-            (
-                f"State    {status}   iteration {mission.iteration}/{mission.max_iterations}"
-                f"   runtime {elapsed}s/{mission.max_runtime_s}s"
-            ),
-        ]
-    )
+    lines = [
+        f"Mission  {mission.name}  [{mission.mission_id}]",
+        f"Target   {mission.target}  ({mission.target_kind})",
+        f"Mode     {mission.mode}   provider={mission.provider}   policy={mission.policy_profile}",
+        (
+            f"State    {status}   iteration {mission.iteration}/{mission.max_iterations}"
+            f"   runtime {elapsed}s/{mission.max_runtime_s}s"
+        ),
+    ]
+    if mission.stop_reason:
+        lines.append(f"Stop     {mission.stop_reason}")
+    return "\n".join(lines)
 
 
 def _bar(closed: int, total: int, width: int = 20) -> str:
@@ -135,6 +135,27 @@ def render_dashboard(view: DashboardView, *, color: bool = False) -> str:
     bar = _bar(w.closed_gaps, total_gaps)
     action_type = a.action_type or "(none)"
     last = a.last_result or "-"
+    failed = (a.execution_status or "").lower() in {
+        "failed",
+        "timeout",
+        "unavailable",
+        "denied",
+        "rejected",
+    }
+    if failed:
+        action_block = [
+            f"  {action_type}",
+            f"  {(a.execution_status or 'failed').upper()}",
+            f"  reason: {a.error_code or '-'}",
+            f"  attempt: {a.attempt or '-'}",
+            f"  retryable: {a.retryable or '-'}",
+            f"  target: {a.target or '-'}",
+        ]
+    else:
+        action_block = [
+            f"  type={action_type}  result={last}  verdict={a.policy_verdict or '-'}",
+            f"  {a.rationale or '-'}",
+        ]
     finding_rows = [f"  · [{item.epistemic}] {item.title}" for item in view.findings[:5]] or [
         "  (none)"
     ]
@@ -155,8 +176,7 @@ def render_dashboard(view: DashboardView, *, color: bool = False) -> str:
         render_mission_header(m, color),
         "",
         _c(color, BOLD, "Current action"),
-        f"  type={action_type}  result={last}  verdict={a.policy_verdict or '-'}",
-        f"  {a.rationale or '-'}",
+        *action_block,
         "",
         _c(color, BOLD, "Known assets"),
         (

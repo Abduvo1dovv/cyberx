@@ -135,15 +135,20 @@ flowchart TB
 
 Owns the loop. The only component allowed to sequence:
 
-1. Load mission + scope + policy profile
-2. Take World Model snapshot
-3. Ask Brain for a `Decision`
-4. Ask Policy to authorize that decision
-5. Dispatch to the matching Action Executor
-6. Push raw output through Evidence Pipeline
-7. Apply `WorldDelta`s
-8. Persist snapshot + audit records
-9. Repeat or stop
+1. Guard mission state / budgets
+2. Observe local network (read-only; not World Model; TIMEOUT is not a fact)
+3. Snapshot World Model (one coherent snapshot per cycle)
+4. Build **one** BrainContext
+5. Revise hypotheses (World Model only; next cycle)
+6. Ask Brain for a `Decision` on that same context
+7. Ask Policy to authorize that decision
+8. Dispatch to the matching Action Executor
+9. Verify artifact integrity, then Evidence Pipeline (`apply_completed_artifact`)
+10. Apply `WorldDelta`s
+11. Persist snapshot + audit records via `EnginePersistence`
+12. Repeat or stop
+
+Internal helpers (`CyclePersistence`, `NetworkCycle`, hypothesis apply, completed-artifact apply) are strategies. They are not a second orchestrator.
 
 The engine is **deterministic and boring on purpose**. Intelligence lives in Brain. Permission lives in Policy. Facts live in World Model.
 

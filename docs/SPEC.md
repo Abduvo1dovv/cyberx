@@ -716,28 +716,31 @@ Details: §3
 | `iteration` | |
 | `scope_digest` | hash + human summary, not full mutate-capable object |
 | `asset_counts` | by kind |
-| `top_assets` | max 50 compact records |
-| `claims` | non-INVALIDATED, max 200, values truncated 200 chars |
-| `gaps` | max 50, priority desc |
-| `hypotheses` | open+supported, max 20 |
+| `top_assets` | max 50 typed `AssetContext` rows |
+| `claims` | non-INVALIDATED, max 200, values truncated 200 chars (`ClaimContext`) |
+| `gaps` | max 50, priority desc (`GapContext`) |
+| `hypotheses` | open+supported, max 20 (`HypothesisContext`) |
 | `coverage_keys` | list of completed coverage_keys |
-| `recent_results` | last 5 ActionResults |
+| `recent_results` | last 5 ActionResults (`ResultContext`) |
 | `recent_events` | last 10 TimelineEvents (messages only) |
 | `revision` | World Model revision used |
 | `byte_size` | |
-| `top_findings` | max 8 compact recon findings |
-| `investigations` | max 8 ranked investigation items |
-| `validation_candidates` | max 8 compact ValidationCandidate rows |
+| `top_findings` | max 8 compact recon findings (`FindingContext`) |
+| `investigations` | max 8 ranked investigation items (`InvestigationContext`) |
+| `validation_candidates` | max 8 compact ValidationCandidate rows (`ValidationContext`) |
 | `graph_digest` | semantic graph digest (ULID-independent) |
-| `investigation_paths` | max 5 compact InvestigationPath rows |
+| `investigation_paths` | max 5 compact InvestigationPath rows (`PathContext`) |
 | `graph_focus` | max 8 compact edges related to top paths / current target |
-| `network` | compact dict: reachability, interface, source, route, tunnel, diagnostic |
+| `network` | compact `NetworkContextSummary`: reachability, interface, source, route, tunnel, diagnostic, digest, current locator |
+| `target_identity` | compact `TargetIdentityContext`: identity, current, previous, historical |
 
-**Hard cap:** serialized JSON ≤ 32 KiB. Truncate `top_assets` then `claims` then events to fit. Then hypotheses, investigations, findings, validation candidates, graph_focus, investigation_paths. Keep `network` compact (selected route only).
+Rows are read-only DTOs (attribute access is canonical). They are **not** domain entities.
+
+**Hard cap:** serialized JSON ≤ 32 KiB. Truncate `top_assets` then `claims` then events to fit. Then hypotheses, investigations, findings, validation candidates, graph_focus, investigation_paths. Keep `network` compact (selected route only). Empty fields are omitted from the serialized form.
 
 **Forbidden in BrainContext:** raw artifacts, argv, secrets, full Scope object (digest only), AI chain-of-thought dumps, the full attack-surface graph
 
-**Lifecycle:** ephemeral per cycle; may be persisted as audit blob hashed, not required for v1 resume
+**Lifecycle:** ephemeral per cycle; one coherent snapshot per MissionEngine decision phase. Hypothesis revisions persist to the World Model for the **next** cycle — do not rebuild BrainContext from partially changed state in the same decision phase. May be persisted as an audit blob hashed; not required for v1 resume.
 
 ---
 
@@ -1539,13 +1542,13 @@ Rationale is deterministic template, e.g.
 
 Engine order per iteration:
 
-1. Snapshot world
+1. Snapshot world (after network observe + validation evaluate/sync)
 2. `ValidationEngine.evaluate` → candidates (no execution)
-3. `GraphProjector.project` → GraphSnapshot; `PathPlanner.plan` → InvestigationPath[]
-4. Build BrainContext (includes top findings + validation candidates + compact paths / graph focus + compact network)
-5. `HypothesisEngine.revise` (persist hypotheses; **no claims**)
-6. Re-evaluate validation candidates (hypothesis links) and rebuild graph context
-7. `Planner.propose` (existing catalog actions only, including mapped validation follow-ups and path follow-ups; IP-gated recon is suppressed on `ROUTE_MISSING` / `UNREACHABLE` / `BLOCKED`)
+3. `GraphProjector.project` → GraphSnapshot; `PathPlanner.plan` → InvestigationPath[] (inside BrainContextBuilder)
+4. Build **one** BrainContext (includes top findings + validation candidates + compact paths / graph focus + compact network + target identity)
+5. `HypothesisEngine.revise` (persist hypotheses onto World Model for the **next** cycle; **no claims**; do not rebuild this cycle's BrainContext)
+6. `Planner.propose` (existing catalog actions only, including mapped validation follow-ups and path follow-ups; IP-gated recon is suppressed on `ROUTE_MISSING` / `UNREACHABLE` / `BLOCKED`; historical locators are not action targets)
+7. Candidate merge by `coverage_key` (one executable candidate; merged reasons; highest gain; `ActionScorer` remains the scoring authority)
 8. `ActionScorer.score` (heuristics, then optional AI advice merge)
 9. `DecisionEngine.select`
 10. Return to Engine (catalog/policy/execute happen **outside** Brain)
@@ -1555,7 +1558,7 @@ Engine order per iteration:
 If provider ≠ `none` and the provider is available:
 
 - Call Grok only when the decision is non-trivial (not first-cycle IP + `ports_unknown` only). Typical triggers: similarly ranked actions, remaining gaps after discovery, investigation paths, or correlated findings.
-- `hypothesize(ctx)` → validate `HypothesisDraft` schema → Brain may accept with `source=ai` (confidence cap 0.4). AI hypotheses are not facts and cannot be promoted without later non-AI evidence.
+- `hypothesize(ctx)` → validate `HypothesisDraft` schema → Brain may accept with `source=ai`. **AI hypothesis confidence is capped at 0.4.** This is an epistemic safety boundary, not a scoring knob: AI proposals are advisory and must not become high-confidence facts without later **non-AI** evidence. Claims may later exceed 0.4 through normal `apply_supporting` updates. AI hypotheses cannot be promoted without that later non-AI evidence.
 - `advise_scores(candidates, ctx)` → map by existing `coverage_key` only; additive delta in `[-0.1, +0.1]`; cannot revive rejected types; cannot create candidates.
 - Timeout default 8s; max 20 calls/mission and 2/cycle; identical fingerprints are not re-sent.
 - On timeout / 429 / invalid JSON / invalid schema / missing credentials / budget exhaustion: discard Grok output and continue with deterministic Brain. **Never stop recon because AI failed.**
@@ -1572,22 +1575,23 @@ Owned by `MissionEngine` in `cyberx.engine.loop`.
 ```text
 while mission.status == RUNNING:
     1. CHECK pause/stop flags; CHECK iteration/runtime budgets
-    2. OBSERVE: snapshot WorldModel
-    2b. OBSERVE NETWORK: NetworkResolver.resolve(target) (read-only; not World Model)
+    2. OBSERVE NETWORK: NetworkResolver.resolve(target) (read-only; not World Model)
     3. UPDATE GAPS: GapDetector.recompute (cheap if revision unchanged skip)
     4. VALIDATE QUESTIONS: ValidationEngine.evaluate (no execution)
-    5. PROJECT GRAPH: GraphProjector + PathPlanner (no execution)
-    6. REASON: HypothesisEngine.revise
-    7. PLAN: Planner → Scorer → DecisionEngine
-    8. IF decision.kind == stop: COMPLETED (no_actions or objectives_met)
-    9. CATALOG/POLICY: catalog + pydantic params + unknown deny
-    9. SCOPE CHECK + policy allowlist + rate limit
-   10. EXECUTE: adapter
-   11. OBSERVE RESULT: parse → evidence → correlate → apply world
-   12. COVERAGE: add coverage_key
-   13. TIMELINE + persist
-   14. iteration += 1
-   15. RE-PLAN (loop)
+    5. SNAPSHOT WorldModel (one coherent snapshot for this decision phase)
+    6. PROJECT GRAPH + BUILD BrainContext (once)
+    7. REASON: HypothesisEngine.revise → persist hyps for next cycle
+    8. PLAN: Planner (dedup by coverage_key) → Scorer → DecisionEngine
+       using the same BrainContext (no second build from partial state)
+    9. IF decision.kind == stop: COMPLETED (no_actions or objectives_met)
+   10. CATALOG/POLICY: catalog + pydantic params + unknown deny
+   11. SCOPE CHECK + policy allowlist + rate limit
+   12. EXECUTE: adapter
+   13. OBSERVE RESULT: verify artifact integrity → parse → evidence → correlate → apply world
+   14. COVERAGE: add coverage_key
+   15. TIMELINE + persist (SQLite transaction: world snapshot + runtime)
+   16. iteration += 1
+   17. RE-PLAN (loop)
 ```
 
 ## 9.2 Limits (defaults)
@@ -1604,9 +1608,17 @@ while mission.status == RUNNING:
 
 ## 9.3 Dedup
 
-Skip candidate if coverage_key in `{COMPLETED, RUNNING, DENIED, REJECTED}` or `FAILED` with non-retryable code.
+Skip candidate if coverage_key in `{COMPLETED, RUNNING, DENIED, REJECTED}` or `FAILED` / `UNAVAILABLE` after retries are exhausted.
+
+A failed attempt is **not** completed coverage. First retryable failure is stored as `attempted` and may be proposed again (max 2 attempts per coverage_key). Non-retryable failures and exhausted retries are `failed` and are skipped.
+
+If planner, path, and validation sources propose the same executable `coverage_key`, the final candidate set contains **one** executable candidate: merged reasons, preserved source metadata (`planner` / `path` / `validation`), highest valid expected information gain. `ActionScorer` remains the only scorer.
 
 New host/url from evidence creates **new** coverage keys → allows follow-up. That is intended adaptivity.
+
+Historical / obsolete locators are never active action targets. Current locator may be targeted. New locators require operator confirmation. Out-of-scope locators are denied. AI cannot retarget.
+
+TIMEOUT reachability is transient and is not persisted as a World Model fact.
 
 ## 9.4 Pause handling
 
@@ -1648,9 +1660,24 @@ Redactor runs on parser input and argv display. Patterns: password/token/jwt/pem
 
 ## 10.4 Repositories (ports)
 
-`MissionRepo`, `ScopeRepo`, `WorldRepo`, `EvidenceRepo`, `ActionRepo`, `ArtifactStore`, `AuditRepo`
+`MissionRepo`, `EvidenceRepo`, `WorldRepo`, `ActionRepo`, `ArtifactStore`, `AuditRepo`, `EnginePersistence`
 
-Domain defines protocols; `storage.sqlite` implements.
+Application code depends on these Protocols. `storage.sqlite` implements them. `EnginePersistence` is the capability set MissionEngine requires when a store is attached (world snapshot, runtime, actions, artifacts, evidence, timeline, decision traces). In-memory missions pass `None`. Duck-typing (`hasattr` / `store_has`) is forbidden in the engine.
+
+Event history uses `EventSink.emit` plus `EventReader.iter_recent` / `emitted_count` (`EventLog`). The engine must not read `InMemoryEventSink.events` internals.
+
+Artifacts are integrity-checked (sha256, size bound, missing/truncated file) before parse. Corruption fails closed and does not create World Model facts. Evidence/history remains the source of truth; World Model and graph are rebuildable projections.
+
+Interrupted persist is recovered by replaying evidence. Meaningful crash boundaries:
+
+- **A** before action persistence — resume has history empty; world rebuilds from existing evidence only
+- **B** after action persistence — actions exist; world does not invent facts from an action row
+- **C** after result persistence — results exist; world still requires evidence
+- **D** after evidence persistence — missing snapshot → `rebuild_from_evidence`
+- **E** after World Model snapshot — hydrate snapshot, then apply tail evidence
+- **F** after decision trace — traces are append-only audit; they are not required to rebuild the world
+
+Action + tool_run + result are written in one SQLite transaction. Evidence (artifact + observations + evidence) is a separate transaction. Snapshot + runtime is a third. Timeline and decision traces are append-only. Duck-typing (`hasattr` / `store_has`) is forbidden in the engine.
 
 ---
 

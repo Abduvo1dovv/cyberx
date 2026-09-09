@@ -1,7 +1,8 @@
-"""Typed events and the EventSink port."""
+"""Typed events and the EventSink / EventReader ports."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -59,9 +60,26 @@ class EventSink(Protocol):
     def emit(self, event: DomainEvent) -> None: ...
 
 
+class EventReader(Protocol):
+    def iter_recent(self, *, after: int = 0, limit: int = 100) -> Iterator[DomainEvent]: ...
+
+    def emitted_count(self) -> int: ...
+
+
+class EventLog(EventSink, EventReader, Protocol):
+    """Minimum emit + read capability. Engine must not inspect sink internals."""
+
+
 class NullEventSink:
     def emit(self, event: DomainEvent) -> None:
         return None
+
+    def iter_recent(self, *, after: int = 0, limit: int = 100) -> Iterator[DomainEvent]:
+        del after, limit
+        return iter(())
+
+    def emitted_count(self) -> int:
+        return 0
 
 
 def emit_safe(sink: EventSink | None, event: DomainEvent) -> None:

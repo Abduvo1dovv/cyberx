@@ -134,10 +134,10 @@ def validate_report_section(raw: dict) -> str:
 def _known_keys(ctx: BrainContext) -> set[str]:
     out: set[str] = set()
     for row in ctx.top_assets:
-        if row.get("id"):
-            out.add(row["id"])
-        if row.get("key"):
-            out.add(row["key"])
+        if row.id:
+            out.add(row.id)
+        if row.key:
+            out.add(row.key)
     return out
 
 

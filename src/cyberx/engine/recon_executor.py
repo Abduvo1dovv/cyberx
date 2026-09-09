@@ -23,6 +23,7 @@ from cyberx.recon.http.request import HTTP_ACTION_TYPES
 from cyberx.recon.http.tech import TechAdapter
 from cyberx.recon.nmap.adapter import NmapAdapter
 from cyberx.recon.nmap.argv import NMAP_ACTION_TYPES
+from cyberx.recon.nmap.process import compact_stderr, looks_like_process_error
 from cyberx.recon.stub import StubAdapter, synthetic_payload
 
 
@@ -91,6 +92,7 @@ class ReconExecutor:
         status, error_code, unavailable, timed_out, exit_code = _status_for(adapter, artifact)
         if unavailable or status is ActionResultStatus.UNAVAILABLE:
             raise AdapterUnavailable(getattr(adapter, "name", "nmap_adapter"))
+        message = compact_stderr(getattr(getattr(adapter, "_last_result", None), "stderr", None))
         tool_run = ToolRun(
             tool_run_id=artifact.tool_run_id,
             action_id=action.action_id,
@@ -112,6 +114,7 @@ class ReconExecutor:
             started_at=started,
             ended_at=ended,
             error_code=error_code,
+            error_message=message or None,
             observation_count=_count_obs(artifact.body)
             if adapter is self._stub
             else (1 if artifact.byte_size else 0),
@@ -193,10 +196,16 @@ def _status_for(
         return ActionResultStatus.COMPLETED, None, False, False, 0
     if adapter.name == "nmap_adapter":
         parseable = bool(artifact.body) and b"<nmaprun" in artifact.body
-        if parseable:
-            return ActionResultStatus.COMPLETED, None, False, False, exit_code
+        if timed_out:
+            return ActionResultStatus.TIMEOUT, "timeout", False, True, -1
         if exit_code == 127:
             return ActionResultStatus.UNAVAILABLE, "adapter_unavailable", True, False, 127
+        if looks_like_process_error(getattr(meta, "stderr", b"") if meta is not None else b""):
+            if parseable:
+                return ActionResultStatus.COMPLETED, None, False, False, exit_code
+            return ActionResultStatus.FAILED, "process_error", False, False, exit_code
+        if parseable:
+            return ActionResultStatus.COMPLETED, None, False, False, exit_code
         if artifact.byte_size == 0:
             return ActionResultStatus.FAILED, "empty_output", False, False, exit_code
         return ActionResultStatus.FAILED, "invalid_output", False, False, exit_code

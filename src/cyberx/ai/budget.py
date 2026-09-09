@@ -72,9 +72,7 @@ class GuardedProvider:
         result = self._call("hypothesize", fp, lambda: self._inner.hypothesize(ctx), ctx)
         return list(result) if isinstance(result, list) else []
 
-    def advise_scores(
-        self, candidates: Sequence[object], ctx: BrainContext
-    ) -> list[ScoreAdvice]:
+    def advise_scores(self, candidates: Sequence[object], ctx: BrainContext) -> list[ScoreAdvice]:
         extra = ",".join(sorted(str(getattr(c, "coverage_key", "") or "") for c in candidates))
         allowed = self._prepare(ctx, "advise_scores", extra=extra)
         if allowed is None:
@@ -115,9 +113,7 @@ class GuardedProvider:
         except Exception:
             return ""
 
-    def _prepare(
-        self, ctx: BrainContext, task: str, extra: str = ""
-    ) -> tuple[str, bool] | None:
+    def _prepare(self, ctx: BrainContext, task: str, extra: str = "") -> tuple[str, bool] | None:
         self._sync_cycle(ctx.iteration)
         if self.name == "none":
             return None

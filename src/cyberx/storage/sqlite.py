@@ -635,6 +635,14 @@ class SqliteStore:
         self.save_meta(artifact, path)
         return path
 
+    def get_body(self, artifact_id: str, mission_id: str) -> bytes:
+        meta = self.get_meta(artifact_id)
+        if meta is not None and meta.path:
+            stored = Path(meta.path)
+            if stored.is_file():
+                return stored.read_bytes()
+        return self.files.get(artifact_id, mission_id)
+
     def save_meta(self, artifact: RawArtifact, path: str | None) -> None:
         self._execute(
             """
@@ -834,7 +842,14 @@ class SqliteStore:
         evidence = self.list_evidence(mission_id)
         if snap is None:
             return self.rebuild_from_evidence(mission_id)
-        world = hydrate_from_snapshot(snap, seed_assets=seeds, evidence=evidence)
+        included = evidence
+        if snap.last_evidence_id:
+            included = []
+            for item in evidence:
+                included.append(item)
+                if item.evidence_id == snap.last_evidence_id:
+                    break
+        world = hydrate_from_snapshot(snap, seed_assets=seeds, evidence=included)
         tail = self.list_evidence(mission_id, after_id=snap.last_evidence_id)
         for item in tail:
             world.apply_evidence(item)

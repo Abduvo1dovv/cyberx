@@ -1,4 +1,9 @@
-"""BrainContextBuilder — compact, deterministic, ≤ 32 KiB (SPEC §3.11)."""
+"""BrainContextBuilder — compact, deterministic, ≤ 32 KiB (SPEC §3.11).
+
+One MissionEngine cycle uses one BrainContext snapshot. Hypothesis revisions
+are applied to the World Model for the *next* cycle; they do not rebuild
+this cycle's context from partially changed state.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from cyberx.actions.coverage import blocking_coverage_keys
 from cyberx.domain.enums import EpistemicStatus, HypothesisStatus
 from cyberx.domain.models.actions import ActionResult
 from cyberx.domain.models.assets import (
@@ -16,6 +22,20 @@ from cyberx.domain.models.assets import (
     Service,
     Technology,
     UrlAsset,
+)
+from cyberx.domain.models.context import (
+    AssetContext,
+    ClaimContext,
+    FindingContext,
+    GapContext,
+    GraphFocusContext,
+    HypothesisContext,
+    InvestigationContext,
+    NetworkContextSummary,
+    PathContext,
+    ResultContext,
+    TargetIdentityContext,
+    ValidationContext,
 )
 from cyberx.domain.models.findings import BrainContext, TimelineEvent
 from cyberx.domain.models.mission import Mission, Scope, Target
@@ -54,77 +74,78 @@ def _clip(value: Any, limit: int = _CLAIM_VALUE_CHARS) -> str:
     return text[:limit]
 
 
-def _compact_host(host: Host) -> dict[str, str]:
+def _compact_host(host: Host) -> AssetContext:
     address = host.ipv4 or host.ipv6 or host.hostname or ""
-    return {
-        "kind": "host",
-        "id": host.asset_id,
-        "key": host.canonical_key,
-        "address": address,
-        "status": host.epistemic_status.value,
-        "labels": ",".join(host.labels),
-    }
+    return AssetContext(
+        kind="host",
+        id=host.asset_id,
+        key=host.canonical_key,
+        address=address,
+        status=host.epistemic_status.value,
+        labels=",".join(host.labels),
+        oos="1" if host.out_of_scope else "",
+    )
 
 
-def _compact_service(svc: Service) -> dict[str, str]:
-    return {
-        "kind": "service",
-        "id": svc.asset_id,
-        "key": svc.canonical_key,
-        "name": svc.name,
-        "port_id": svc.port_id,
-        "status": svc.epistemic_status.value,
-    }
+def _compact_service(svc: Service) -> AssetContext:
+    return AssetContext(
+        kind="service",
+        id=svc.asset_id,
+        key=svc.canonical_key,
+        name=svc.name,
+        port_id=svc.port_id,
+        status=svc.epistemic_status.value,
+    )
 
 
-def _compact_url(url: UrlAsset) -> dict[str, str]:
+def _compact_url(url: UrlAsset) -> AssetContext:
     locator = f"{url.scheme}://{url.host}:{url.port}{url.path or '/'}"
-    return {
-        "kind": "url",
-        "id": url.asset_id,
-        "key": url.canonical_key,
-        "url": locator,
-        "host": url.host,
-        "port": str(url.port),
-        "scheme": url.scheme,
-        "path": url.path or "/",
-        "status": url.epistemic_status.value,
-        "http_status": str(url.status_code or ""),
-        "title": url.title or "",
-    }
+    return AssetContext(
+        kind="url",
+        id=url.asset_id,
+        key=url.canonical_key,
+        url=locator,
+        host=url.host,
+        port=str(url.port),
+        scheme=url.scheme,
+        path=url.path or "/",
+        status=url.epistemic_status.value,
+        http_status=str(url.status_code or ""),
+        title=url.title or "",
+    )
 
 
-def _compact_endpoint(ep: Endpoint) -> dict[str, str]:
-    return {
-        "kind": "endpoint",
-        "id": ep.asset_id,
-        "key": ep.canonical_key,
-        "method": ep.method.value,
-        "url": ep.url_canonical,
-        "auth": "1" if ep.auth_required else "0",
-        "status": ep.epistemic_status.value,
-    }
+def _compact_endpoint(ep: Endpoint) -> AssetContext:
+    return AssetContext(
+        kind="endpoint",
+        id=ep.asset_id,
+        key=ep.canonical_key,
+        method=ep.method.value,
+        url=ep.url_canonical,
+        auth="1" if ep.auth_required else "0",
+        status=ep.epistemic_status.value,
+    )
 
 
-def _compact_auth(auth: AuthenticationSurface) -> dict[str, str]:
-    return {
-        "kind": "auth_surface",
-        "id": auth.asset_id,
-        "key": auth.canonical_key,
-        "auth_kind": auth.auth_kind.value,
-        "status": auth.epistemic_status.value,
-    }
+def _compact_auth(auth: AuthenticationSurface) -> AssetContext:
+    return AssetContext(
+        kind="auth_surface",
+        id=auth.asset_id,
+        key=auth.canonical_key,
+        auth_kind=auth.auth_kind.value,
+        status=auth.epistemic_status.value,
+    )
 
 
-def _compact_tech(tech: Technology) -> dict[str, str]:
-    return {
-        "kind": "technology",
-        "id": tech.asset_id,
-        "key": tech.canonical_key,
-        "product": tech.product,
-        "version": tech.version or "",
-        "status": tech.epistemic_status.value,
-    }
+def _compact_tech(tech: Technology) -> AssetContext:
+    return AssetContext(
+        kind="technology",
+        id=tech.asset_id,
+        key=tech.canonical_key,
+        product=tech.product,
+        version=tech.version or "",
+        status=tech.epistemic_status.value,
+    )
 
 
 class BrainContextBuilder:
@@ -143,7 +164,7 @@ class BrainContextBuilder:
     ) -> BrainContext:
         digest = scope_digest(scope) if scope is not None else _sha16(mission.scope_id)
         counts = snapshot.summary()["asset_counts"]
-        top: list[dict[str, str]] = []
+        top: list[AssetContext] = []
         for host in snapshot.hosts[:50]:
             if "alias" in host.labels or "historical" in host.labels:
                 continue
@@ -172,45 +193,45 @@ class BrainContextBuilder:
             if len(top) >= 50:
                 break
             top.append(
-                {
-                    "kind": "port",
-                    "id": port.asset_id,
-                    "key": port.canonical_key,
-                    "host_id": port.host_id,
-                    "number": str(port.number),
-                    "protocol": port.protocol.value,
-                    "state": port.state.value,
-                    "status": port.epistemic_status.value,
-                }
+                AssetContext(
+                    kind="port",
+                    id=port.asset_id,
+                    key=port.canonical_key,
+                    host_id=port.host_id,
+                    number=str(port.number),
+                    protocol=port.protocol.value,
+                    state=port.state.value,
+                    status=port.epistemic_status.value,
+                )
             )
         for domain in snapshot.domains:
             if len(top) >= 50:
                 break
             top.append(
-                {
-                    "kind": "domain",
-                    "id": domain.asset_id,
-                    "key": domain.canonical_key,
-                    "fqdn": domain.fqdn,
-                    "status": domain.epistemic_status.value,
-                }
+                AssetContext(
+                    kind="domain",
+                    id=domain.asset_id,
+                    key=domain.canonical_key,
+                    fqdn=domain.fqdn,
+                    status=domain.epistemic_status.value,
+                )
             )
         for sub in snapshot.subdomains:
             if len(top) >= 50:
                 break
             top.append(
-                {
-                    "kind": "subdomain",
-                    "id": sub.asset_id,
-                    "key": sub.canonical_key,
-                    "fqdn": sub.fqdn,
-                    "status": sub.epistemic_status.value,
-                }
+                AssetContext(
+                    kind="subdomain",
+                    id=sub.asset_id,
+                    key=sub.canonical_key,
+                    fqdn=sub.fqdn,
+                    status=sub.epistemic_status.value,
+                )
             )
         for net in (scope.allowed_networks if scope is not None else [])[:5]:
             if len(top) >= 50:
                 break
-            top.append({"kind": "network", "key": f"net:{net}", "address": net})
+            top.append(AssetContext(kind="network", key=f"net:{net}", address=net))
         top = top[:50]
 
         live_claims = [
@@ -218,36 +239,36 @@ class BrainContextBuilder:
         ]
         live_claims.sort(key=lambda c: (-c.confidence, c.predicate, c.claim_id))
         claims = [
-            {
-                "predicate": c.predicate,
-                "object": _clip(c.object),
-                "status": c.epistemic_status.value,
-                "subject_id": c.subject_id,
-                "confidence": f"{c.confidence:.3f}",
-            }
+            ClaimContext(
+                predicate=c.predicate,
+                object=_clip(c.object),
+                status=c.epistemic_status.value,
+                subject_id=c.subject_id,
+                confidence=f"{c.confidence:.3f}",
+            )
             for c in live_claims[:200]
         ]
         conflicts = [
-            {
-                "predicate": c.predicate,
-                "object": _clip(c.object),
-                "status": c.epistemic_status.value,
-                "subject_id": c.subject_id,
-            }
+            ClaimContext(
+                predicate=c.predicate,
+                object=_clip(c.object),
+                status=c.epistemic_status.value,
+                subject_id=c.subject_id,
+            )
             for c in snapshot.get_conflicts()[:20]
         ]
         open_gaps = [g for g in snapshot.gaps if not g.closed]
         open_gaps.sort(key=lambda g: (-g.priority, g.kind, g.gap_id))
         key_by_id = {a.asset_id: a.canonical_key for a in _all_assets(snapshot)}
         gaps = [
-            {
-                "kind": g.kind,
-                "id": g.gap_id,
-                "subject_id": g.subject_id or "",
-                "subject_key": key_by_id.get(g.subject_id or "", ""),
-                "detail": g.detail,
-                "priority": f"{g.priority:.2f}",
-            }
+            GapContext(
+                kind=g.kind,
+                id=g.gap_id,
+                subject_id=g.subject_id or "",
+                subject_key=key_by_id.get(g.subject_id or "", ""),
+                detail=g.detail,
+                priority=f"{g.priority:.2f}",
+            )
             for g in open_gaps[:50]
         ]
         hyps = [
@@ -256,20 +277,20 @@ class BrainContextBuilder:
             if h.status in {HypothesisStatus.OPEN, HypothesisStatus.SUPPORTED}
         ]
         hyp_rows = [
-            {
-                "id": h.hypothesis_id,
-                "statement": h.statement[:200],
-                "status": h.status.value,
-            }
+            HypothesisContext(
+                id=h.hypothesis_id,
+                statement=h.statement[:200],
+                status=h.status.value,
+            )
             for h in hyps[:20]
         ]
-        coverage = sorted(snapshot.coverage)
+        coverage = blocking_coverage_keys(snapshot.coverage)
         results = [
-            {
-                "action_id": r.action_id,
-                "status": r.status.value,
-                "result_id": r.result_id,
-            }
+            ResultContext(
+                action_id=r.action_id,
+                status=r.status.value,
+                result_id=r.result_id,
+            )
             for r in list(recent_results)[-5:]
         ]
         events: list[str] = []
@@ -277,26 +298,26 @@ class BrainContextBuilder:
             events.append(item if isinstance(item, str) else item.message[:200])
 
         investigations = [
-            {
-                "id": item.finding_id,
-                "title": item.title[:120],
-                "reason": item.reason,
-                "priority": f"{item.priority:.2f}",
-                "asset": item.asset,
-                "asset_id": item.asset_id,
-            }
+            InvestigationContext(
+                id=item.finding_id,
+                title=item.title[:120],
+                reason=item.reason,
+                priority=f"{item.priority:.2f}",
+                asset=item.asset,
+                asset_id=item.asset_id,
+            )
             for item in rank_investigations(snapshot, limit=8)
         ]
         top_findings = [
-            {
-                "id": f.finding_id,
-                "title": f.title[:120],
-                "kind": f.kind.value,
-                "signal": f.signal or f.kind.value,
-                "severity": f.severity.value,
-                "confidence": f"{f.confidence:.2f}",
-                "asset_id": f.asset_ids[0] if f.asset_ids else "",
-            }
+            FindingContext(
+                id=f.finding_id,
+                title=f.title[:120],
+                kind=f.kind.value,
+                signal=f.signal or f.kind.value,
+                severity=f.severity.value,
+                confidence=f"{f.confidence:.2f}",
+                asset_id=f.asset_ids[0] if f.asset_ids else "",
+            )
             for f in snapshot.get_findings()[:8]
         ]
         raw_cands = (
@@ -305,23 +326,23 @@ class BrainContextBuilder:
             else ValidationEngine().evaluate(snapshot)
         )
         compact_cands = [
-            {
-                "id": c.validation_id,
-                "type": c.candidate_type,
-                "status": c.status.value,
-                "action": c.mapped_action_type,
-                "reason": c.reason[:160],
-                "priority": f"{c.priority:.2f}",
-                "finding_id": c.finding_id or "",
-                "coverage_key": c.coverage_key,
-                "locator": c.locator,
-                "asset_id": c.asset_ids[0] if c.asset_ids else "",
-                "hypothesis_id": c.hypothesis_id or "",
-                "url": str(c.parameters.get("url") or ""),
-                "url_id": str(c.parameters.get("url_id") or ""),
-                "host_id": str(c.parameters.get("host_id") or ""),
-                "port": str(c.parameters.get("port") or ""),
-            }
+            ValidationContext(
+                id=c.validation_id,
+                type=c.candidate_type,
+                status=c.status.value,
+                action=c.mapped_action_type,
+                reason=c.reason[:160],
+                priority=f"{c.priority:.2f}",
+                finding_id=c.finding_id or "",
+                coverage_key=c.coverage_key,
+                locator=c.locator,
+                asset_id=c.asset_ids[0] if c.asset_ids else "",
+                hypothesis_id=c.hypothesis_id or "",
+                url=str(c.parameters.get("url") or ""),
+                url_id=str(c.parameters.get("url_id") or ""),
+                host_id=str(c.parameters.get("host_id") or ""),
+                port=str(c.parameters.get("port") or ""),
+            )
             for c in raw_cands[:8]
         ]
 
@@ -329,20 +350,30 @@ class BrainContextBuilder:
         paths = PathPlanner().plan(graph, snapshot, validation_candidates=raw_cands)
         compact_paths = [_compact_path(p) for p in paths[:5]]
         compact_focus = _graph_focus(graph, paths)
-        network = network_context.compact() if network_context is not None else {}
+        network = (
+            NetworkContextSummary.model_validate(network_context.compact())
+            if network_context is not None
+            else NetworkContextSummary()
+        )
         if network_context is not None:
             gaps = _with_network_gap(gaps, network_context)
             net_digest = network_context.digest()
             if previous_network_digest and previous_network_digest != net_digest:
-                network["changed"] = "1"
+                network = network.model_copy(update={"changed": "1"})
             else:
-                network["changed"] = "0"
-        identity = _compact_target(target) if target is not None else {}
-        if identity and network:
-            identity["reachability"] = network.get("reachability") or "UNKNOWN"
-            network["current_locator"] = identity.get("current") or ""
-            network["historical_locator"] = identity.get("previous") or ""
-            network["identity"] = identity.get("identity") or ""
+                network = network.model_copy(update={"changed": "0"})
+        identity = _compact_target(target) if target is not None else TargetIdentityContext()
+        if identity.populated() and network.populated():
+            identity = identity.model_copy(
+                update={"reachability": network.reachability or "UNKNOWN"}
+            )
+            network = network.model_copy(
+                update={
+                    "current_locator": identity.current,
+                    "historical_locator": identity.previous,
+                    "identity": identity.identity,
+                }
+            )
 
         ctx = BrainContext(
             mission_id=mission.mission_id,
@@ -372,19 +403,19 @@ class BrainContextBuilder:
         return _fit(ctx)
 
 
-def _compact_target(target: Target) -> dict[str, str]:
+def _compact_target(target: Target) -> TargetIdentityContext:
     historical = target.historical_locators()
-    return {
-        "identity": target.identity_key(),
-        "kind": target.kind.value,
-        "current": target.current_locator or target.normalized,
-        "previous": target.previous_locator() or "",
-        "historical": ",".join(historical[:8]),
-        "normalized": target.normalized,
-    }
+    return TargetIdentityContext(
+        identity=target.identity_key(),
+        kind=target.kind.value,
+        current=target.current_locator or target.normalized,
+        previous=target.previous_locator() or "",
+        historical=",".join(historical[:8]),
+        normalized=target.normalized,
+    )
 
 
-def _with_network_gap(gaps: list[dict[str, str]], network: NetworkContext) -> list[dict[str, str]]:
+def _with_network_gap(gaps: list[GapContext], network: NetworkContext) -> list[GapContext]:
     """BrainContext-only diagnostic. Not a World Model gap kind."""
     status = network.reachability.value
     kind_map = {
@@ -395,15 +426,12 @@ def _with_network_gap(gaps: list[dict[str, str]], network: NetworkContext) -> li
     kind = kind_map.get(status)
     if not kind:
         return gaps
-    row = {
-        "kind": kind,
-        "id": "",
-        "subject_id": "",
-        "subject_key": "",
-        "detail": network.diagnostic[:160],
-        "priority": "1.00",
-    }
-    return [row, *[g for g in gaps if g.get("kind") != kind]][:50]
+    row = GapContext(
+        kind=kind,
+        detail=network.diagnostic[:160],
+        priority="1.00",
+    )
+    return [row, *[g for g in gaps if g.kind != kind]][:50]
 
 
 def _all_assets(snapshot: WorldSnapshot):
@@ -422,31 +450,31 @@ def _all_assets(snapshot: WorldSnapshot):
     )
 
 
-def _compact_path(path: Any) -> dict[str, str]:
+def _compact_path(path: Any) -> PathContext:
     params = path.parameters or {}
-    return {
-        "id": path.path_id,
-        "key": path.semantic_key[:200],
-        "labels": " → ".join(path.labels[:8])[:160],
-        "priority": f"{path.priority:.2f}",
-        "action": path.action_type,
-        "locator": path.locator[:160],
-        "questions": "; ".join(path.unresolved_questions[:3])[:160],
-        "oos": "1" if path.out_of_scope else "0",
-        "asset_id": params.get("host_id") or params.get("url_id") or params.get("domain_id") or "",
-        "url": params.get("url") or "",
-        "url_id": params.get("url_id") or "",
-        "host_id": params.get("host_id") or "",
-        "port": params.get("port") or "",
-        "domain_id": params.get("domain_id") or "",
-        "fqdn": params.get("fqdn") or "",
-        "completeness": f"{path.completeness:.2f}",
-        "confidence": f"{path.confidence:.2f}",
-    }
+    return PathContext(
+        id=path.path_id,
+        key=path.semantic_key[:200],
+        labels=" → ".join(path.labels[:8])[:160],
+        priority=f"{path.priority:.2f}",
+        action=path.action_type,
+        locator=path.locator[:160],
+        questions="; ".join(path.unresolved_questions[:3])[:160],
+        oos="1" if path.out_of_scope else "0",
+        asset_id=params.get("host_id") or params.get("url_id") or params.get("domain_id") or "",
+        url=params.get("url") or "",
+        url_id=params.get("url_id") or "",
+        host_id=params.get("host_id") or "",
+        port=params.get("port") or "",
+        domain_id=params.get("domain_id") or "",
+        fqdn=params.get("fqdn") or "",
+        completeness=f"{path.completeness:.2f}",
+        confidence=f"{path.confidence:.2f}",
+    )
 
 
-def _graph_focus(graph: Any, paths: Sequence[Any]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def _graph_focus(graph: Any, paths: Sequence[Any]) -> list[GraphFocusContext]:
+    out: list[GraphFocusContext] = []
     seen: set[str] = set()
     for path in paths[:5]:
         for token in path.edges:
@@ -460,11 +488,11 @@ def _graph_focus(graph: Any, paths: Sequence[Any]) -> list[dict[str, str]]:
             src_node = graph.node_by_key(src)
             dst_node = graph.node_by_key(dst)
             out.append(
-                {
-                    "kind": kind,
-                    "src": (src_node.label if src_node is not None else src)[:80],
-                    "dst": (dst_node.label if dst_node is not None else dst)[:80],
-                }
+                GraphFocusContext(
+                    kind=kind,
+                    src=(src_node.label if src_node is not None else src)[:80],
+                    dst=(dst_node.label if dst_node is not None else dst)[:80],
+                )
             )
             if len(out) >= 8:
                 return out
@@ -477,11 +505,11 @@ def _graph_focus(graph: Any, paths: Sequence[Any]) -> list[dict[str, str]]:
             src_node = graph.node_by_key(edge.src_key)
             dst_node = graph.node_by_key(edge.dst_key)
             out.append(
-                {
-                    "kind": edge.kind.value,
-                    "src": (src_node.label if src_node is not None else edge.src_key)[:80],
-                    "dst": (dst_node.label if dst_node is not None else edge.dst_key)[:80],
-                }
+                GraphFocusContext(
+                    kind=edge.kind.value,
+                    src=(src_node.label if src_node is not None else edge.src_key)[:80],
+                    dst=(dst_node.label if dst_node is not None else edge.dst_key)[:80],
+                )
             )
             if len(out) >= 8:
                 break
@@ -536,20 +564,20 @@ def _fit(ctx: BrainContext) -> BrainContext:
             update={"investigation_paths": current.investigation_paths[:1]}
         )
         size = _size(current)
-    if size > MAX_BYTES and current.network:
-        keep = {
-            "reachability": current.network.get("reachability", "UNKNOWN"),
-            "current_locator": current.network.get("current_locator", ""),
-            "digest": current.network.get("digest", ""),
-        }
+    if size > MAX_BYTES and current.network.populated():
+        keep = NetworkContextSummary(
+            reachability=current.network.reachability or "UNKNOWN",
+            current_locator=current.network.current_locator,
+            digest=current.network.digest,
+        )
         current = current.model_copy(update={"network": keep})
         size = _size(current)
-    if size > MAX_BYTES and current.target_identity:
-        keep_id = {
-            "identity": current.target_identity.get("identity", ""),
-            "current": current.target_identity.get("current", ""),
-            "previous": current.target_identity.get("previous", ""),
-        }
+    if size > MAX_BYTES and current.target_identity.populated():
+        keep_id = TargetIdentityContext(
+            identity=current.target_identity.identity,
+            current=current.target_identity.current,
+            previous=current.target_identity.previous,
+        )
         current = current.model_copy(update={"target_identity": keep_id})
         size = _size(current)
     return current.model_copy(update={"byte_size": _size(current)})

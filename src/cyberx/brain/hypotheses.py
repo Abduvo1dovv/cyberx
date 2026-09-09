@@ -29,36 +29,36 @@ _SIGNAL_TEMPLATES = {
 
 class HypothesisEngine:
     def revise(self, ctx: BrainContext) -> list[HypothesisDelta]:
-        existing = {row.get("statement") for row in ctx.hypotheses}
-        existing_ids = {row.get("id") for row in ctx.hypotheses}
-        del existing_ids
+        existing = {row.statement for row in ctx.hypotheses}
+        existing_core = {core_statement(row.statement) for row in ctx.hypotheses}
         deltas: list[HypothesisDelta] = []
-        open_kinds = {g.get("kind") for g in ctx.gaps}
+        open_kinds = {gap.kind for gap in ctx.gaps}
         for gap in ctx.gaps:
-            kind = gap.get("kind") or ""
+            kind = gap.kind
             template = _TEMPLATES.get(kind, f"unresolved knowledge: {kind}")
-            subject = gap.get("subject_key") or gap.get("subject_id") or ""
+            subject = gap.subject_key or gap.subject_id
             statement = f"{template} ({subject})" if subject else template
-            if statement in existing:
+            if statement in existing or template in existing_core:
                 continue
             deltas.append(
                 HypothesisDelta(
                     op="create",
                     statement=statement[:500],
                     gap_kind=kind,
-                    gap_id=gap.get("id") or "",
-                    subject_id=gap.get("subject_id") or "",
+                    gap_id=gap.id,
+                    subject_id=gap.subject_id,
                     confidence=0.3,
                     rationale=f"open gap {kind}",
                 )
             )
             existing.add(statement)
+            existing_core.add(template)
         for row in ctx.top_findings:
-            signal = row.get("signal") or ""
+            signal = row.signal
             template = _SIGNAL_TEMPLATES.get(signal)
             if not template:
                 continue
-            fid = row.get("id") or ""
+            fid = row.id
             statement = f"{template} ({fid})" if fid else template
             if statement in existing:
                 continue
@@ -66,20 +66,20 @@ class HypothesisEngine:
                 HypothesisDelta(
                     op="create",
                     statement=statement[:500],
-                    subject_id=row.get("asset_id") or "",
+                    subject_id=row.asset_id,
                     confidence=0.3,
                     rationale=f"recon signal {signal}",
                 )
             )
             existing.add(statement)
         for row in ctx.validation_candidates:
-            if row.get("status") != "supported":
+            if row.status != "supported":
                 continue
-            hid = row.get("hypothesis_id") or ""
+            hid = row.hypothesis_id
             statement = ""
             for hyp in ctx.hypotheses:
-                if hid and hyp.get("id") == hid:
-                    statement = hyp.get("statement") or ""
+                if hid and hyp.id == hid:
+                    statement = hyp.statement
                     break
             if not hid and not statement:
                 continue
@@ -93,7 +93,7 @@ class HypothesisEngine:
                 )
             )
         for row in ctx.hypotheses:
-            statement = row.get("statement") or ""
+            statement = row.statement
             gap_derived = any(template in statement for template in _TEMPLATES.values())
             if not gap_derived:
                 continue
@@ -107,8 +107,15 @@ class HypothesisEngine:
                     HypothesisDelta(
                         op="retire",
                         statement=statement,
-                        hypothesis_id=row.get("id"),
+                        hypothesis_id=row.id or None,
                         rationale="gap closed",
                     )
                 )
         return deltas
+
+
+def core_statement(statement: str) -> str:
+    text = statement.strip()
+    if " (" in text and text.endswith(")"):
+        return text[: text.rfind(" (")].strip()
+    return text

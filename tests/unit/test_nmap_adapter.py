@@ -146,6 +146,62 @@ def test_unavailable_runner_raises(tmp_path) -> None:
         executor.execute(_authorized())
 
 
+def test_process_error_is_classified(tmp_path) -> None:
+    runner = FixtureProcessRunner(b"", exit_code=1, stderr=b"Could not bind to source address")
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "process_error"
+    assert outcome.result.error_message
+    assert "bind" in (outcome.result.error_message or "").lower()
+
+
+def test_bind_failure_retries_without_source_address(tmp_path) -> None:
+    xml = _xml("host_22.xml")
+
+    class BindThenOk:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(self, argv, *, timeout_s, cwd=None):
+            del timeout_s, cwd
+            self.calls.append(list(argv))
+            from cyberx.recon.nmap.process import CommandResult, _output_path
+
+            if "-S" in argv:
+                return CommandResult(
+                    argv=list(argv),
+                    exit_code=1,
+                    stderr=b"Could not bind to requested source address",
+                )
+            path = _output_path(argv)
+            if path:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(xml)
+            return CommandResult(argv=list(argv), exit_code=0)
+
+    runner = BindThenOk()
+    adapter = NmapAdapter(runner=runner, available=True)
+    ctx = ExecutionContext(
+        mission_id=_action().mission_id,
+        action_id=_action().action_id,
+        timeout_s=30,
+        workdir=str(tmp_path),
+        reachability="REACHABLE",
+        source_interface="tun0",
+        source_address="10.10.15.7",
+    )
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert len(runner.calls) == 2
+    assert "-S" in runner.calls[0]
+    assert "-e" in runner.calls[1]
+    assert "-S" not in runner.calls[1]
+    assert runner.calls[1][runner.calls[1].index("-e") + 1] == "tun0"
+
+
 def test_process_runner_is_the_only_subprocess_wrapper() -> None:
     assert hasattr(ProcessRunner, "run")
     src = Path(__file__).resolve().parents[2] / "src" / "cyberx" / "recon" / "nmap"

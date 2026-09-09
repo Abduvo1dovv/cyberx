@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from cyberx.domain.confidence import validate_confidence
+from cyberx.domain.confidence import AI_HYPOTHESIS_CONFIDENCE_CAP, validate_confidence
 from cyberx.domain.enums import (
     EpistemicStatus,
     FindingKind,
@@ -28,6 +28,20 @@ from cyberx.domain.ids import (
     require_id,
 )
 from cyberx.domain.models.common import DomainModel
+from cyberx.domain.models.context import (
+    AssetContext,
+    ClaimContext,
+    FindingContext,
+    GapContext,
+    GraphFocusContext,
+    HypothesisContext,
+    InvestigationContext,
+    NetworkContextSummary,
+    PathContext,
+    ResultContext,
+    TargetIdentityContext,
+    ValidationContext,
+)
 
 _SHELL_MARKERS = (
     "&&",
@@ -121,13 +135,20 @@ class Hypothesis(DomainModel):
         for marker in _SHELL_MARKERS:
             if marker in self.statement:
                 raise DomainValidationError("hypothesis statement cannot contain shell commands")
-        if self.source is HypothesisSource.AI and self.confidence > 0.4:
+        # Epistemic safety: AI proposals stay advisory until non-AI evidence arrives.
+        if self.source is HypothesisSource.AI and self.confidence > AI_HYPOTHESIS_CONFIDENCE_CAP:
             raise DomainValidationError("AI hypothesis confidence is capped at 0.4")
         if self.status is HypothesisStatus.PROMOTED:
             if not self.promoted_claim_id:
                 raise DomainValidationError("promoted hypothesis requires promoted_claim_id")
             require_id(self.promoted_claim_id, PREFIX_CLAIM)
         return self
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> Hypothesis:
+        copied = super().model_copy(update=update, deep=deep)
+        return type(self).model_validate(copied.model_dump())
 
 
 class TimelineEvent(DomainModel):
@@ -151,32 +172,42 @@ class TimelineEvent(DomainModel):
 
 
 class BrainContext(DomainModel):
+    """Compact, read-only planning projection. One instance per engine cycle."""
+
     mission_id: str
     intent: str
     mode: str
     iteration: int
     scope_digest: str
     asset_counts: dict[str, int] = Field(default_factory=dict)
-    top_assets: list[dict[str, str]] = Field(default_factory=list)
-    claims: list[dict[str, str]] = Field(default_factory=list)
-    gaps: list[dict[str, str]] = Field(default_factory=list)
-    hypotheses: list[dict[str, str]] = Field(default_factory=list)
+    top_assets: list[AssetContext] = Field(default_factory=list)
+    claims: list[ClaimContext] = Field(default_factory=list)
+    gaps: list[GapContext] = Field(default_factory=list)
+    hypotheses: list[HypothesisContext] = Field(default_factory=list)
     coverage_keys: list[str] = Field(default_factory=list)
-    recent_results: list[dict[str, str]] = Field(default_factory=list)
+    recent_results: list[ResultContext] = Field(default_factory=list)
     recent_events: list[str] = Field(default_factory=list)
     revision: int = 0
     byte_size: int = 0
-    conflicts: list[dict[str, str]] = Field(default_factory=list)
-    top_findings: list[dict[str, str]] = Field(default_factory=list)
-    investigations: list[dict[str, str]] = Field(default_factory=list)
-    validation_candidates: list[dict[str, str]] = Field(default_factory=list)
+    conflicts: list[ClaimContext] = Field(default_factory=list)
+    top_findings: list[FindingContext] = Field(default_factory=list)
+    investigations: list[InvestigationContext] = Field(default_factory=list)
+    validation_candidates: list[ValidationContext] = Field(default_factory=list)
     graph_digest: str = ""
-    investigation_paths: list[dict[str, str]] = Field(default_factory=list)
-    graph_focus: list[dict[str, str]] = Field(default_factory=list)
-    network: dict[str, str] = Field(default_factory=dict)
-    target_identity: dict[str, str] = Field(default_factory=dict)
+    investigation_paths: list[PathContext] = Field(default_factory=list)
+    graph_focus: list[GraphFocusContext] = Field(default_factory=list)
+    network: NetworkContextSummary = Field(default_factory=NetworkContextSummary)
+    target_identity: TargetIdentityContext = Field(default_factory=TargetIdentityContext)
 
     @field_validator("mission_id")
     @classmethod
     def _mid(cls, value: str) -> str:
         return require_id(value, PREFIX_MISSION)
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> BrainContext:
+        data = self.model_dump()
+        if update:
+            data.update(dict(update))
+        return type(self).model_validate(data)

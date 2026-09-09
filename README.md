@@ -16,6 +16,12 @@ v1 = reconnaissance + adaptive intelligence + safe validation questions.
 
 It is **not** production-ready and **not** fully autonomous.
 
+Internal architecture (pre-v2 hardening): typed BrainContext DTOs, one context
+per engine cycle, `EnginePersistence` / `EventLog` ports, locator current-vs-
+historical filtering, AI hypothesis confidence cap 0.4 (epistemic safety),
+candidate merge by coverage_key, and fail-closed artifact integrity. Capability
+boundary is unchanged.
+
 ## What it does
 
 - Creates a Mission with a frozen Scope
@@ -93,6 +99,8 @@ and will not print the key.
 ```bash
 python main.py --version
 python main.py --doctor
+python main.py --network 10.10.11.23
+python main.py --diagnose 10.10.11.23
 python main.py
 ```
 
@@ -135,10 +143,13 @@ and [Understanding the HTB VPN](https://help.hackthebox.com/en/articles/8602725-
 
 ```bash
 python main.py --network 10.10.11.23
+python main.py --diagnose 10.10.11.23
 ```
 
-That command does **not** scan. It only reports interface, source, route, and
-reachability. Tunnel labels are `DETECTED_UNVERIFIED` heuristics.
+Those commands do **not** scan. `--network` reports interface, source, route, and
+reachability. `--diagnose` adds target normalization, tool availability,
+timeouts, and AI provider state — never API keys or VPN credentials.
+Tunnel labels are `DETECTED_UNVERIFIED` heuristics.
 
 A new in-scope locator becomes **current** only after the operator confirms it
 (`t` on the dashboard). AI cannot retarget. DNS cannot expand scope.

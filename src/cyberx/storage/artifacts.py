@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cyberx.domain.errors import StorageError
 from cyberx.ports.execution import RawArtifact
 
 
@@ -16,9 +17,21 @@ class FileArtifactStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def put(self, artifact: RawArtifact) -> str:
+    def path_for(self, artifact: RawArtifact) -> Path:
         folder = self.mission_dir(artifact.mission_id) / "artifacts"
         folder.mkdir(parents=True, exist_ok=True)
-        dest = folder / f"{artifact.artifact_id}.bin"
+        return folder / f"{artifact.artifact_id}.bin"
+
+    def put(self, artifact: RawArtifact) -> str:
+        dest = self.path_for(artifact)
         dest.write_bytes(artifact.body or b"")
         return str(dest)
+
+    def get(self, artifact_id: str, mission_id: str) -> bytes:
+        dest = self.mission_dir(mission_id) / "artifacts" / f"{artifact_id}.bin"
+        if not dest.is_file():
+            raise StorageError(
+                f"artifact missing: {artifact_id}",
+                code="artifact_missing",
+            )
+        return dest.read_bytes()

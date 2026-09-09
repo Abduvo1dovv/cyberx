@@ -30,6 +30,8 @@ Do not paste VPN credentials, `.ovpn` files, or API keys into the repo.
 ```bash
 python main.py --version          # 1.0.0-ctf
 python main.py --doctor           # stub/nmap/AI status, no scan
+python main.py --network <AUTHORIZED_TARGET>
+python main.py --diagnose <AUTHORIZED_TARGET>
 which nmap || true
 ```
 
@@ -181,6 +183,8 @@ fresh `CYBERX_DATA_DIR`.
 | Failure | Fix |
 |---|---|
 | `nmap unavailable` | install nmap or stay in stub mode |
+| `port_scan FAILED reason=process_error` | nmap could not bind/run; check root/`-e` interface; mission stays running |
+| `port_scan FAILED` then still `host.ports_unknown` | expected: failed ≠ completed coverage |
 | HTTP/DNS still work when nmap is missing | expected |
 | Route missing / TIMEOUT | VPN/routing outside CyberX; not a host-down fact |
 | Grok timeout / no key | Brain continues |
@@ -195,3 +199,28 @@ ruff check src tests
 ```
 
 Do not point the automated suite at arbitrary Internet hosts.
+
+## 20. Optional real-tool smoke (manual, authorized lab only)
+
+CI uses stubs/fixtures. These commands are **manual** and require an
+authorized target plus tools on PATH. They do not scan the public Internet.
+
+```bash
+# 1) environment
+python main.py --diagnose <AUTHORIZED_TARGET>
+
+# 2) Nmap (operator machine)
+nmap -n -Pn -sT --top-ports 100 --max-retries 1 <AUTHORIZED_TARGET>
+
+# 3) HTTP
+curl -I --max-time 10 http://<AUTHORIZED_TARGET>/
+
+# 4) DNS
+dig +time=3 +tries=1 <AUTHORIZED_DOMAIN> A
+
+# 5) directory enum is bounded inside CyberX (no gobuster required)
+CYBERX_STUB=0 python main.py
+```
+
+If CyberX `port_scan` fails, the dashboard shows FAILED / reason / attempt.
+That is not mission success. Fix the environment and resume.

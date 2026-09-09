@@ -14,12 +14,8 @@ MIN_SCORE = 0.15
 class ActionScorer:
     def score(self, candidates: list[CandidateAction], ctx: BrainContext) -> list[ScoredAction]:
         seen = set(ctx.coverage_keys)
-        open_kinds = {g.get("kind") for g in ctx.gaps}
-        failed_types = {
-            row.get("status") == "failed" and row.get("action_id") for row in ctx.recent_results
-        }
-        del failed_types
-        sibling_failed = any(r.get("status") == "failed" for r in ctx.recent_results)
+        open_kinds = {gap.kind for gap in ctx.gaps}
+        sibling_failed = any(row.status == "failed" for row in ctx.recent_results)
         out: list[ScoredAction] = []
         for cand in candidates:
             novelty = 0.0 if cand.coverage_key in seen else 1.0
@@ -27,7 +23,7 @@ class ActionScorer:
                 p in open_kinds for p in cand.prerequisites
             )
             if cand.action_type == "http_probe" and any(
-                a.get("kind") == "port" and a.get("state") == "open" for a in ctx.top_assets
+                asset.kind == "port" and asset.state == "open" for asset in ctx.top_assets
             ):
                 related = True
             if _validation_hit(cand, ctx):
@@ -88,43 +84,39 @@ def _intel_for(cand: CandidateAction, ctx: BrainContext) -> float:
     asset_id = cand.target.asset_id or ""
     for row in ctx.investigations:
         try:
-            pri = float(row.get("priority") or 0)
+            pri = float(row.priority or 0)
         except ValueError:
             pri = 0.0
-        if asset_id and row.get("asset_id") == asset_id:
+        if asset_id and row.asset_id == asset_id:
             best = max(best, pri)
-        elif locator and locator and locator in (row.get("asset") or ""):
+        elif locator and locator in (row.asset or ""):
             best = max(best, pri)
     for row in ctx.validation_candidates:
-        if row.get("status") != "proposed":
+        if row.status != "proposed":
             continue
         try:
-            pri = float(row.get("priority") or 0)
+            pri = float(row.priority or 0)
         except ValueError:
             pri = 0.0
-        if row.get("coverage_key") and row.get("coverage_key") == cand.coverage_key:
+        if row.coverage_key and row.coverage_key == cand.coverage_key:
             best = max(best, pri)
-        elif (
-            row.get("action") == cand.action_type
-            and locator
-            and locator == (row.get("locator") or "")
-        ):
+        elif row.action == cand.action_type and locator and locator == row.locator:
             best = max(best, pri)
     for row in ctx.investigation_paths:
-        if row.get("oos") == "1":
+        if row.oos == "1":
             continue
         try:
-            pri = float(row.get("priority") or 0)
+            pri = float(row.priority or 0)
         except ValueError:
             pri = 0.0
-        if row.get("action") != cand.action_type:
+        if row.action != cand.action_type:
             continue
-        path_locator = row.get("locator") or ""
+        path_locator = row.locator
         if path_locator and (
             path_locator == locator or locator in path_locator or path_locator in locator
         ):
             best = max(best, pri)
-        elif asset_id and (row.get("asset_id") == asset_id or row.get("host_id") == asset_id):
+        elif asset_id and (row.asset_id == asset_id or row.host_id == asset_id):
             best = max(best, pri)
     return clamp01(best)
 
@@ -132,22 +124,18 @@ def _intel_for(cand: CandidateAction, ctx: BrainContext) -> float:
 def _validation_hit(cand: CandidateAction, ctx: BrainContext) -> bool:
     locator = cand.target.canonical_locator or ""
     for row in ctx.validation_candidates:
-        if row.get("status") != "proposed":
+        if row.status != "proposed":
             continue
-        if row.get("coverage_key") and row.get("coverage_key") == cand.coverage_key:
+        if row.coverage_key and row.coverage_key == cand.coverage_key:
             return True
-        if (
-            row.get("action") == cand.action_type
-            and locator
-            and locator == (row.get("locator") or "")
-        ):
+        if row.action == cand.action_type and locator and locator == row.locator:
             return True
     for row in ctx.investigation_paths:
-        if row.get("oos") == "1":
+        if row.oos == "1":
             continue
-        if row.get("action") != cand.action_type:
+        if row.action != cand.action_type:
             continue
-        path_locator = row.get("locator") or ""
+        path_locator = row.locator
         if path_locator and locator and (path_locator == locator or locator in path_locator):
             return True
     return False

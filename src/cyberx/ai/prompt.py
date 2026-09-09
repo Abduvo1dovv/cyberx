@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from cyberx.domain.models.context import as_row_dump
 from cyberx.domain.models.findings import BrainContext, Finding
 from cyberx.evidence.redactor import REDACTED, Redactor
 
@@ -67,19 +68,19 @@ def serialize_context(
         "revision": ctx.revision,
         "scope_digest": ctx.scope_digest,
         "asset_counts": ctx.asset_counts,
-        "top_assets": ctx.top_assets,
-        "gaps": ctx.gaps,
-        "hypotheses": ctx.hypotheses,
-        "top_findings": ctx.top_findings,
-        "investigations": ctx.investigations,
-        "validation_candidates": ctx.validation_candidates,
-        "investigation_paths": ctx.investigation_paths,
+        "top_assets": [as_row_dump(row) for row in ctx.top_assets],
+        "gaps": [as_row_dump(row) for row in ctx.gaps],
+        "hypotheses": [as_row_dump(row) for row in ctx.hypotheses],
+        "top_findings": [as_row_dump(row) for row in ctx.top_findings],
+        "investigations": [as_row_dump(row) for row in ctx.investigations],
+        "validation_candidates": [as_row_dump(row) for row in ctx.validation_candidates],
+        "investigation_paths": [as_row_dump(row) for row in ctx.investigation_paths],
         "graph_digest": ctx.graph_digest,
-        "graph_focus": ctx.graph_focus,
-        "network": ctx.network,
-        "recent_results": ctx.recent_results,
+        "graph_focus": [as_row_dump(row) for row in ctx.graph_focus],
+        "network": as_row_dump(ctx.network),
+        "recent_results": [as_row_dump(row) for row in ctx.recent_results],
         "coverage_keys": ctx.coverage_keys[:80],
-        "claims": ctx.claims[:40],
+        "claims": [as_row_dump(row) for row in ctx.claims[:40]],
     }
     if candidates:
         payload["candidates"] = [

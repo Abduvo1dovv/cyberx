@@ -54,9 +54,7 @@ class GrokProvider:
             self._reject(ctx.mission_id, "hypothesize", "schema")
         return accepted
 
-    def advise_scores(
-        self, candidates: Sequence[object], ctx: BrainContext
-    ) -> list[ScoreAdvice]:
+    def advise_scores(self, candidates: Sequence[object], ctx: BrainContext) -> list[ScoreAdvice]:
         raw = self._complete("advise_scores", ctx, candidates=candidates)
         if raw is None:
             return []

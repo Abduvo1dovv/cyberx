@@ -58,6 +58,9 @@ class CurrentActionView:
     policy_verdict: str | None
     execution_status: str | None
     last_result: str | None
+    error_code: str | None = None
+    attempt: str | None = None
+    retryable: str | None = None
 
 
 @dataclass(frozen=True)

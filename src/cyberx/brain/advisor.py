@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from cyberx.ai.protocol import HypothesisDraft, IntelligenceProvider, ScoreAdvice
 from cyberx.ai.validate import DELTA_LIMIT
 from cyberx.brain.types import CandidateAction, HypothesisDelta, ScoredAction
-from cyberx.domain.confidence import clamp01
+from cyberx.domain.confidence import AI_HYPOTHESIS_CONFIDENCE_CAP, clamp01
 from cyberx.domain.models.findings import BrainContext
 
 _TRIVIAL_GAPS = {
@@ -22,7 +22,7 @@ _TRIVIAL_GAPS = {
 def is_trivial(ctx: BrainContext) -> bool:
     if ctx.top_findings or ctx.investigation_paths or ctx.validation_candidates:
         return False
-    kinds = {g.get("kind") or "" for g in ctx.gaps}
+    kinds = {gap.kind for gap in ctx.gaps}
     kinds.discard("")
     if not kinds:
         return True
@@ -57,7 +57,7 @@ def drafts_to_deltas(drafts: Sequence[HypothesisDraft], ctx: BrainContext) -> li
             HypothesisDelta(
                 op="create",
                 statement=item.statement[:500],
-                confidence=min(0.4, max(0.0, item.confidence)),
+                confidence=min(AI_HYPOTHESIS_CONFIDENCE_CAP, max(0.0, item.confidence)),
                 rationale=(item.rationale or "ai suggestion")[:500],
                 subject_id=subject if subject.startswith("hst_") else "",
                 source="ai",

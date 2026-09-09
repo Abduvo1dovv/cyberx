@@ -1,54 +1,70 @@
-"""MissionEngine adaptive loop. The only sequencer. Brain never executes."""
+"""MissionEngine adaptive loop. The only sequencer. Brain never executes.
+
+Cycle:
+  guard → observe network → snapshot → one BrainContext → revise hypotheses
+  → decide → authorize/execute → evidence → persist → report
+
+Hypothesis revisions are applied to the World Model for the next cycle.
+The decision phase does not rebuild BrainContext from partially changed state.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Any
 
+from cyberx.actions.coverage import (
+    attempt_display,
+    format_action_event,
+    is_retryable_error,
+    next_failure_coverage,
+    parse_action_event,
+)
 from cyberx.brain.context import BrainContextBuilder, context_hash
 from cyberx.brain.facade import Brain
-from cyberx.brain.types import CycleReport, Decision, DecisionTrace, HypothesisDelta
+from cyberx.brain.types import CycleReport, Decision, DecisionTrace
 from cyberx.domain.enums import (
     ActionResultStatus,
     ActionStatus,
-    HypothesisSource,
-    HypothesisStatus,
     MissionStatus,
-    ReachabilityStatus,
     StopReason,
     TimelineKind,
 )
 from cyberx.domain.errors import (
     ActionRejected,
     AdapterUnavailable,
-    ParseError,
     PolicyDeniedError,
 )
-from cyberx.domain.ids import (
-    PREFIX_HYPOTHESIS,
-    PREFIX_TIMELINE,
-    new_id,
-)
+from cyberx.domain.ids import PREFIX_TIMELINE, new_id
 from cyberx.domain.models.actions import ActionRequest
-from cyberx.domain.models.findings import Hypothesis, TimelineEvent
+from cyberx.domain.models.findings import TimelineEvent
 from cyberx.domain.models.mission import Mission
 from cyberx.domain.models.network import NetworkContext
 from cyberx.domain.time import utcnow
+from cyberx.engine.apply import apply_completed_artifact
 from cyberx.engine.boundary import ExecutionBoundary
+from cyberx.engine.hypotheses import apply_hypothesis_deltas
+from cyberx.engine.observe import (
+    NetworkCycle,
+    execution_context,
+    unavailable_event,
+)
+from cyberx.engine.persist import CyclePersistence
 from cyberx.evidence.pipeline import EvidencePipeline
+from cyberx.mission.ports import MissionBundle
 from cyberx.mission.service import MissionService
 from cyberx.network.resolver import NetworkResolver
-from cyberx.ports.events import DomainEvent, EventSink, EventType, NullEventSink, emit_safe
-from cyberx.ports.execution import ExecutionContext
+from cyberx.ports.events import EventLog, NullEventSink
+from cyberx.ports.storage import EnginePersistence
 from cyberx.scope.gate import MissionScopeGate
 from cyberx.validation.engine import ValidationEngine
 from cyberx.world.correlation import ScopeGate
 from cyberx.world.model import InMemoryWorldModel
 
 TERMINAL = frozenset({MissionStatus.COMPLETED, MissionStatus.STOPPED, MissionStatus.FAILED})
-RETRYABLE = frozenset({"timeout", "adapter_crash", "empty_output"})
 MAX_CONSECUTIVE_FAILURES = 5
 PROGRESS_STALL_CYCLES = 3
+# Matches ActionLimits.max_attempts (first attempt is 1).
+MAX_ACTION_ATTEMPTS = 2
 
 
 class FrozenScopeGate:
@@ -67,27 +83,32 @@ class MissionEngine:
         brain: Brain | None = None,
         boundary: ExecutionBoundary | None = None,
         pipeline: EvidencePipeline | None = None,
-        store: Any | None = None,
+        store: EnginePersistence | None = None,
         builder: BrainContextBuilder | None = None,
-        events: EventSink | None = None,
+        events: EventLog | None = None,
         network: NetworkResolver | None = None,
     ) -> None:
         self._service = service
         self._brain = brain or Brain()
         self._boundary = boundary or ExecutionBoundary()
         self._pipeline = pipeline or EvidencePipeline()
-        self._store = store
+        self._persist = CyclePersistence(store)
         self._builder = builder or BrainContextBuilder()
-        self._events = events or NullEventSink()
-        self._network = network or NetworkResolver()
+        self._events: EventLog = events or NullEventSink()
+        self._net = NetworkCycle(
+            network or NetworkResolver(),
+            self._events,
+            append_event=self._append_event,
+            mark_unreachable=self._service.mark_locator_unreachable,
+        )
         self._worlds: dict[str, InMemoryWorldModel] = {}
         self._failures: dict[str, int] = {}
         self._stalls: dict[str, int] = {}
         self._last_progress: dict[str, tuple[int, int]] = {}
         self._results: dict[str, list] = {}
         self._traces: dict[str, list[DecisionTrace]] = {}
-        self._last_network: dict[str, NetworkContext] = {}
         self._ai_event_cursor = 0
+        self._diag: dict[str, dict[str, str]] = {}
 
     def world(self, mission_id: str) -> InMemoryWorldModel:
         if mission_id not in self._worlds:
@@ -97,21 +118,15 @@ class MissionEngine:
     def _load_world(self, mission_id: str) -> InMemoryWorldModel:
         bundle = self._service.get_bundle(mission_id)
         gate: ScopeGate = MissionScopeGate(bundle.scope)
-        store = self._store
-        if store is not None and hasattr(store, "resume_world"):
-            try:
-                world = store.resume_world(mission_id)
-                fails, stalls, last_rev, last_ev = (0, 0, 0, 0)
-                if hasattr(store, "get_runtime"):
-                    fails, stalls, last_rev, last_ev = store.get_runtime(mission_id)
-                self._failures[mission_id] = fails
-                self._stalls[mission_id] = stalls
-                self._last_progress[mission_id] = (last_rev, last_ev)
-                if hasattr(world, "_scope_gate"):
-                    world._scope_gate = gate
-                return world
-            except Exception:
-                pass
+        resumed = self._persist.resume_world(mission_id)
+        if resumed is not None:
+            fails, stalls, last_rev, last_ev = self._persist.runtime(mission_id)
+            self._failures[mission_id] = fails
+            self._stalls[mission_id] = stalls
+            self._last_progress[mission_id] = (last_rev, last_ev)
+            resumed._scope_gate = gate
+            self._hydrate_diag(mission_id)
+            return resumed
         world = InMemoryWorldModel(mission_id, scope_gate=gate)
         if bundle.seed_assets:
             world.seed_assets(bundle.seed_assets)
@@ -120,6 +135,57 @@ class MissionEngine:
     def run_one_cycle(self, mission_id: str) -> CycleReport:
         bundle = self._service.get_bundle(mission_id)
         mission = bundle.mission
+        early = self._guard(mission_id, mission)
+        if early is not None:
+            return early
+
+        world = self.world(mission_id)
+        if world.revision == 0 and bundle.seed_assets:
+            world.seed_assets(bundle.seed_assets)
+
+        prev_net = self._net.last(mission_id)
+        prev_digest = prev_net.digest() if prev_net is not None else None
+        net = self._net.observe(mission_id, bundle.target, bundle.scope)
+
+        validation = ValidationEngine()
+        candidates = validation.evaluate(world)
+        validation.sync_findings(world, candidates)
+        snapshot = world.snapshot()
+        ctx = self._builder.build(
+            snapshot,
+            mission,
+            scope=bundle.scope,
+            recent_results=self._results.get(mission_id, [])[-5:],
+            recent_events=bundle.timeline[-10:],
+            validation_candidates=candidates,
+            network_context=net,
+            target=bundle.target,
+            previous_network_digest=prev_digest,
+        )
+        # Hypothesis work mutates the World Model for the next cycle only.
+        hyp_deltas = self._brain.revise_hypotheses(ctx)
+        apply_hypothesis_deltas(world, mission_id, hyp_deltas)
+        self._flush_ai_timeline(mission_id)
+        decision = self._brain.decide(ctx, min_score=mission.min_action_score)
+        self._flush_ai_timeline(mission_id)
+        trace = DecisionTrace(
+            mission_id=mission_id,
+            iteration=mission.iteration,
+            context_revision=ctx.revision,
+            context_hash=context_hash(ctx),
+            candidates=decision.scores,
+            selected_type=decision.action.action_type if decision.action else None,
+            selected_coverage_key=(decision.action.coverage_key if decision.action else None),
+            rationale=decision.rationale,
+            world_revision=world.revision,
+        )
+
+        if decision.kind != "act" or decision.action is None:
+            return self._stop_for_decision(mission_id, world, decision, trace)
+
+        return self._act(mission_id, bundle, world, decision, trace, net)
+
+    def _guard(self, mission_id: str, mission: Mission) -> CycleReport | None:
         if mission.status is MissionStatus.PAUSED or mission.pause_requested:
             return self._report(
                 mission,
@@ -157,7 +223,6 @@ class MissionEngine:
                 ),
                 completed=False,
             )
-
         if mission.iteration >= mission.max_iterations:
             self._service.complete(mission_id, StopReason.MAX_ITERATIONS)
             return self._report(
@@ -188,75 +253,68 @@ class MissionEngine:
                     completed=True,
                     stop_reason="max_runtime",
                 )
+        return None
 
-        world = self.world(mission_id)
-        if world.revision == 0 and bundle.seed_assets:
-            world.seed_assets(bundle.seed_assets)
-
-        snapshot = world.snapshot()
-        prev_net = self._last_network.get(mission_id)
-        prev_digest = prev_net.digest() if prev_net is not None else None
-        net = self._observe_network(mission_id, bundle.target, bundle.scope)
-        validation = ValidationEngine()
-        candidates = validation.evaluate(world)
-        validation.sync_findings(world, candidates)
-        ctx = self._builder.build(
-            snapshot,
-            mission,
-            scope=bundle.scope,
-            recent_results=self._results.get(mission_id, [])[-5:],
-            recent_events=bundle.timeline[-10:],
-            validation_candidates=candidates,
-            network_context=net,
-            target=bundle.target,
-            previous_network_digest=prev_digest,
-        )
-        hyp_deltas = self._brain.revise_hypotheses(ctx)
-        self._apply_hypotheses(world, mission_id, hyp_deltas)
-        self._flush_ai_timeline(mission_id)
-        candidates = validation.evaluate(world)
-        validation.sync_findings(world, candidates)
-        ctx = self._builder.build(
-            world.snapshot(),
-            mission,
-            scope=bundle.scope,
-            recent_results=self._results.get(mission_id, [])[-5:],
-            recent_events=bundle.timeline[-10:],
-            validation_candidates=candidates,
-            network_context=net,
-            target=bundle.target,
-            previous_network_digest=prev_digest,
-        )
-        decision = self._brain.decide(ctx, min_score=mission.min_action_score)
-        self._flush_ai_timeline(mission_id)
-        trace = DecisionTrace(
-            mission_id=mission_id,
-            iteration=mission.iteration,
-            context_revision=ctx.revision,
-            context_hash=context_hash(ctx),
-            candidates=decision.scores,
-            selected_type=decision.action.action_type if decision.action else None,
-            selected_coverage_key=(decision.action.coverage_key if decision.action else None),
-            rationale=decision.rationale,
-            world_revision=world.revision,
-        )
-
-        if decision.kind != "act" or decision.action is None:
-            reason = StopReason(decision.stop_reason or "no_actions")
+    def _stop_for_decision(
+        self,
+        mission_id: str,
+        world: InMemoryWorldModel,
+        decision: Decision,
+        trace: DecisionTrace,
+    ) -> CycleReport:
+        reason_token = decision.stop_reason or "no_actions"
+        open_gaps = [gap for gap in world.get_gaps() if not gap.closed]
+        if reason_token == "no_actions" and open_gaps:
+            self._service.bump_iteration(mission_id)
+            self._note_progress(mission_id, world, 0)
             if self._stalls.get(mission_id, 0) >= PROGRESS_STALL_CYCLES:
                 reason = StopReason.STALLED
-            self._service.complete(mission_id, reason)
-            trace = trace.model_copy(update={"execution_status": "stopped"})
+                self._service.complete(mission_id, reason)
+                trace = trace.model_copy(update={"execution_status": "stalled"})
+                self._remember_trace(mission_id, trace)
+                self._persist_cycle(mission_id, world, trace=trace)
+                return self._report(
+                    self._service.get(mission_id),
+                    decision,
+                    completed=True,
+                    stop_reason=reason.value,
+                    execution_status="stalled",
+                )
+            trace = trace.model_copy(update={"execution_status": "deferred"})
             self._remember_trace(mission_id, trace)
             self._persist_cycle(mission_id, world, trace=trace)
             return self._report(
                 self._service.get(mission_id),
                 decision,
-                completed=True,
-                stop_reason=reason.value,
+                completed=False,
+                execution_status="deferred",
             )
+        reason = StopReason(reason_token)
+        if self._stalls.get(mission_id, 0) >= PROGRESS_STALL_CYCLES:
+            reason = StopReason.STALLED
+        self._service.complete(mission_id, reason)
+        trace = trace.model_copy(update={"execution_status": "stopped"})
+        self._remember_trace(mission_id, trace)
+        self._persist_cycle(mission_id, world, trace=trace)
+        return self._report(
+            self._service.get(mission_id),
+            decision,
+            completed=True,
+            stop_reason=reason.value,
+        )
 
+    def _act(
+        self,
+        mission_id: str,
+        bundle: MissionBundle,
+        world: InMemoryWorldModel,
+        decision: Decision,
+        trace: DecisionTrace,
+        net: NetworkContext,
+    ) -> CycleReport:
         candidate = decision.action
+        assert candidate is not None
+        mission = bundle.mission
         request = ActionRequest(
             mission_id=mission_id,
             action_type=candidate.action_type,
@@ -270,7 +328,8 @@ class MissionEngine:
         evidence_added = 0
         policy_verdict = None
         exec_status = None
-        exec_ctx = self._execution_context(candidate, net)
+        exec_ctx = execution_context(candidate, net)
+        locator = candidate.target.canonical_locator or ""
         try:
             outcome = self._boundary.run(request, mission, bundle.scope, ctx=exec_ctx)
         except PolicyDeniedError as exc:
@@ -313,111 +372,64 @@ class MissionEngine:
                 execution_status=exec_status,
             )
         except AdapterUnavailable as exc:
-            exec_status = "unavailable"
-            self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
-            world.record_coverage(candidate.coverage_key, "unavailable")
-            self._append_event(
-                mission_id,
-                TimelineKind.ERROR,
-                _unavailable_event(exc.adapter_name),
-            )
-            if self._failures[mission_id] >= MAX_CONSECUTIVE_FAILURES:
-                self._service.complete(mission_id, StopReason.TOO_MANY_FAILURES)
-                self._persist_cycle(mission_id, world)
-                return self._report(
-                    self._service.get(mission_id),
-                    decision,
-                    completed=True,
-                    stop_reason="too_many_failures",
-                    execution_status=exec_status,
-                )
-            self._service.bump_iteration(mission_id)
-            self._persist_cycle(mission_id, world)
-            return self._report(
-                self._service.get(mission_id),
-                decision,
-                execution_status=exec_status,
-            )
+            return self._unavailable(mission_id, world, decision, candidate, exc)
 
         policy_verdict = "allow"
         exec_status = outcome.result.status.value
         self._results.setdefault(mission_id, []).append(outcome.result)
-        if store_has(self._store, "save_action"):
-            self._store.save_action(outcome.action)
-            self._store.save_tool_run(outcome.tool_run)
-            self._store.save_result(outcome.result)
+        self._persist.save_execution(outcome.action, outcome.tool_run, outcome.result)
 
         if outcome.result.status is ActionResultStatus.COMPLETED:
             self._failures[mission_id] = 0
-            parsed_ok = True
-            obs: list = []
-            evidence: list = []
-            try:
-                obs, evidence = self._pipeline.normalize(outcome.artifact)
-            except ParseError as exc:
-                parsed_ok = False
-                emit_safe(
-                    self._events,
-                    DomainEvent(
-                        event_type=EventType.PARSE_FAILED,
-                        mission_id=mission_id,
-                        payload={
-                            "action_type": candidate.action_type,
-                            "code": exc.code,
-                        },
-                    ),
-                )
-                self._append_event(mission_id, TimelineKind.ERROR, f"parse failed: {exc.code}")
-                exec_status = "failed"
-                world.record_coverage(candidate.coverage_key, "failed")
+            evidence_added, exec_status, parsed_ok = apply_completed_artifact(
+                pipeline=self._pipeline,
+                persist=self._persist,
+                events=self._events,
+                append_event=self._append_event,
+                observe_locator=self._service.observe_locator,
+                world=world,
+                mission_id=mission_id,
+                action_type=candidate.action_type,
+                coverage_key=candidate.coverage_key,
+                artifact=outcome.artifact,
+            )
+            if not parsed_ok:
                 self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
-            if parsed_ok:
-                emit_safe(
-                    self._events,
-                    DomainEvent(
-                        event_type=EventType.PARSE_COMPLETED,
-                        mission_id=mission_id,
-                        payload={
-                            "action_type": candidate.action_type,
-                            "observation_count": len(obs),
-                            "evidence_count": len(evidence),
-                        },
-                    ),
+                self._remember_diag(
+                    mission_id,
+                    action_type=candidate.action_type,
+                    status=exec_status,
+                    reason="invalid_output",
+                    previous="",
+                    target=locator,
+                    retryable=False,
                 )
-                if store_has(self._store, "put"):
-                    self._store.put(outcome.artifact)
-                for item in obs:
-                    if store_has(self._store, "insert_observation"):
-                        self._store.insert_observation(item)
-                for item in evidence:
-                    if store_has(self._store, "insert_evidence"):
-                        self._store.insert_evidence(item)
-                    world.apply_evidence(item)
-                    evidence_added += 1
-                self._ingest_locator_evidence(mission_id, evidence)
-                world.record_coverage(candidate.coverage_key, "completed")
+            else:
+                self._remember_diag(
+                    mission_id,
+                    action_type=candidate.action_type,
+                    status="completed",
+                    reason="",
+                    previous="",
+                    target=locator,
+                    retryable=False,
+                )
         else:
             self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
-            retryable = (outcome.result.error_code or "") in RETRYABLE
-            if retryable and outcome.action.attempt < 2:
-                # one immediate retry of the same authorized path is engine-owned
-                try:
-                    retry = self._boundary.run(request, mission, bundle.scope, ctx=exec_ctx)
-                    if retry.result.status is ActionResultStatus.COMPLETED:
-                        self._failures[mission_id] = 0
-                        _obs, evidence = self._pipeline.normalize(retry.artifact)
-                        for item in evidence:
-                            world.apply_evidence(item)
-                            evidence_added += 1
-                        self._ingest_locator_evidence(mission_id, evidence)
-                        world.record_coverage(candidate.coverage_key, "completed")
-                        exec_status = "completed"
-                    else:
-                        world.record_coverage(candidate.coverage_key, "failed")
-                except Exception:
-                    world.record_coverage(candidate.coverage_key, "failed")
-            else:
-                world.record_coverage(candidate.coverage_key, "failed")
+            error_code = outcome.result.error_code or exec_status or "failed"
+            previous = world.get_coverage().get(candidate.coverage_key, "")
+            status = next_failure_coverage(previous, error_code)
+            world.record_coverage(candidate.coverage_key, status)
+            retryable = is_retryable_error(error_code) and status == "attempted"
+            self._remember_diag(
+                mission_id,
+                action_type=candidate.action_type,
+                status=exec_status or "failed",
+                reason=error_code,
+                previous=previous,
+                target=locator,
+                retryable=retryable,
+            )
             if self._failures[mission_id] >= MAX_CONSECUTIVE_FAILURES:
                 self._service.complete(mission_id, StopReason.TOO_MANY_FAILURES)
                 self._persist_cycle(mission_id, world)
@@ -433,7 +445,7 @@ class MissionEngine:
         self._append_event(
             mission_id,
             TimelineKind.ACTION,
-            f"{candidate.action_type} {exec_status}",
+            self._action_event(candidate.action_type, exec_status, mission_id),
         )
         self._service.bump_iteration(mission_id)
         self._note_progress(mission_id, world, evidence_added)
@@ -470,6 +482,50 @@ class MissionEngine:
             evidence_added=evidence_added,
         )
 
+    def _unavailable(
+        self,
+        mission_id: str,
+        world: InMemoryWorldModel,
+        decision: Decision,
+        candidate: object,
+        exc: AdapterUnavailable,
+    ) -> CycleReport:
+        exec_status = "unavailable"
+        self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
+        world.record_coverage(candidate.coverage_key, "unavailable")
+        locator = getattr(getattr(candidate, "target", None), "canonical_locator", "") or ""
+        self._remember_diag(
+            mission_id,
+            action_type=str(getattr(candidate, "action_type", "")),
+            status=exec_status,
+            reason="adapter_unavailable",
+            previous="",
+            target=str(locator),
+            retryable=False,
+        )
+        self._append_event(
+            mission_id,
+            TimelineKind.ERROR,
+            unavailable_event(exc.adapter_name),
+        )
+        if self._failures[mission_id] >= MAX_CONSECUTIVE_FAILURES:
+            self._service.complete(mission_id, StopReason.TOO_MANY_FAILURES)
+            self._persist_cycle(mission_id, world)
+            return self._report(
+                self._service.get(mission_id),
+                decision,
+                completed=True,
+                stop_reason="too_many_failures",
+                execution_status=exec_status,
+            )
+        self._service.bump_iteration(mission_id)
+        self._persist_cycle(mission_id, world)
+        return self._report(
+            self._service.get(mission_id),
+            decision,
+            execution_status=exec_status,
+        )
+
     def run_forever(self, mission_id: str) -> list[CycleReport]:
         reports: list[CycleReport] = []
         while True:
@@ -484,55 +540,19 @@ class MissionEngine:
     def traces(self, mission_id: str) -> list[DecisionTrace]:
         return list(self._traces.get(mission_id, []))
 
+    def action_diagnostic(self, mission_id: str) -> dict[str, str]:
+        if mission_id not in self._diag:
+            self._hydrate_diag(mission_id)
+        return dict(self._diag.get(mission_id) or {})
+
     def network_context(self, mission_id: str) -> NetworkContext | None:
         bundle = self._service.get_bundle(mission_id)
-        return self._observe_network(mission_id, bundle.target, bundle.scope)
+        return self._net.observe(mission_id, bundle.target, bundle.scope)
 
     def _observe_network(
-        self, mission_id: str, target: Any, scope: Any, *, emit: bool = True
+        self, mission_id: str, target: object, scope: object, *, emit: bool = True
     ) -> NetworkContext:
-        token = _target_token(target)
-        resolved = list(getattr(target, "resolved_ipv4", None) or [])
-        resolved.extend(getattr(target, "resolved_ipv6", None) or [])
-        try:
-            net = self._network.resolve(token, scope=scope, resolved_ips=resolved)
-        except Exception:
-            net = NetworkContext.unavailable(token, diagnostic="network observe failed")
-        prev = self._last_network.get(mission_id)
-        self._last_network[mission_id] = net
-        changed = prev is None or prev.digest() != net.digest()
-        blocking = net.reachability.value in {"ROUTE_MISSING", "UNREACHABLE", "BLOCKED"}
-        if emit and net.reachability is ReachabilityStatus.UNREACHABLE and (net.target_ip or token):
-            try:
-                self._service.mark_locator_unreachable(mission_id, net.target_ip or token)
-            except Exception:
-                pass
-        if emit and changed:
-            msg = (
-                f"network {net.reachability.value}"
-                + (f" via {net.selected_interface}" if net.selected_interface else "")
-                + (f" src={net.source_address}" if net.source_address else "")
-                + (f" route={net.selected_route}" if net.selected_route else "")
-                + f" digest={net.digest()}"
-            )
-            if blocking and net.diagnostic:
-                msg = f"{msg}; {net.diagnostic}"
-            self._append_event(mission_id, TimelineKind.NETWORK, msg[:1000])
-            emit_safe(
-                self._events,
-                DomainEvent(
-                    event_type=EventType.NETWORK_OBSERVED,
-                    mission_id=mission_id,
-                    payload={
-                        "reachability": net.reachability.value,
-                        "interface": net.selected_interface or "",
-                        "route": net.selected_route or "",
-                        "source": net.source_address or "",
-                        "digest": net.digest(),
-                    },
-                ),
-            )
-        return net
+        return self._net.observe(mission_id, target, scope, emit=emit)
 
     def sync_locator_hosts(self, mission_id: str) -> None:
         """Label historical locator hosts and seed the current locator host."""
@@ -575,113 +595,17 @@ class MissionEngine:
             )
             world.apply([upsert_asset_delta(labeled)])
 
-    def _ingest_locator_evidence(self, mission_id: str, evidence: list) -> None:
-        for item in evidence:
-            preview = getattr(item, "claim_preview", None) or {}
-            pred = str(preview.get("predicate") or "")
-            obj = preview.get("object")
-            locators: list[str] = []
-            if pred == "dns.record" and isinstance(obj, dict):
-                rtype = str(obj.get("type") or "").upper()
-                if rtype in {"A", "AAAA"}:
-                    value = str(obj.get("value") or "")
-                    if value:
-                        locators.append(value)
-            elif pred == "host.address":
-                if isinstance(obj, str):
-                    locators.append(obj)
-                elif isinstance(obj, dict):
-                    value = str(obj.get("value") or obj.get("ip") or "")
-                    if value:
-                        locators.append(value)
-            for locator in locators:
-                try:
-                    self._service.observe_locator(
-                        mission_id,
-                        locator,
-                        source="dns" if pred == "dns.record" else "recon",
-                        evidence_ids=[item.evidence_id],
-                    )
-                except Exception:
-                    continue
-
-    def _execution_context(self, candidate: Any, net: NetworkContext) -> ExecutionContext:
-        return ExecutionContext(
-            mission_id=candidate.target.asset_id or "pending",
-            action_id="pending",
-            timeout_s=int(getattr(candidate, "timeout_s", 30) or 30),
-            stub=False,
-            source_interface=net.selected_interface,
-            source_address=net.source_address,
-            route_cidr=net.selected_route,
-            reachability=net.reachability.value,
-            likely_tunnel=net.likely_tunnel,
-            network_diagnostic=net.diagnostic[:200],
-        )
-
-    def _apply_hypotheses(
-        self, world: InMemoryWorldModel, mission_id: str, deltas: list[HypothesisDelta]
-    ) -> None:
-        existing = {h.statement: h for h in world.get_hypotheses()}
-        for delta in deltas:
-            if delta.op == "create" and delta.statement not in existing:
-                source = HypothesisSource.AI if delta.source == "ai" else HypothesisSource.HEURISTIC
-                confidence = delta.confidence
-                if source is HypothesisSource.AI:
-                    confidence = min(0.4, confidence)
-                try:
-                    hyp = Hypothesis(
-                        hypothesis_id=new_id(PREFIX_HYPOTHESIS),
-                        mission_id=mission_id,
-                        statement=delta.statement,
-                        status=HypothesisStatus.OPEN,
-                        confidence=confidence,
-                        created_at=utcnow(),
-                        rationale=delta.rationale,
-                        related_asset_ids=[delta.subject_id] if delta.subject_id else [],
-                        related_gap_ids=[delta.gap_id] if delta.gap_id else [],
-                        source=source,
-                    )
-                except Exception:
-                    continue
-                world.record_hypothesis(hyp)
-            elif delta.op == "support":
-                for hyp in world.get_hypotheses():
-                    if hyp.statement == delta.statement or (
-                        delta.hypothesis_id and hyp.hypothesis_id == delta.hypothesis_id
-                    ):
-                        world.record_hypothesis(
-                            hyp.model_copy(
-                                update={
-                                    "status": HypothesisStatus.SUPPORTED,
-                                    "confidence": min(1.0, hyp.confidence + 0.15),
-                                    "rationale": delta.rationale or hyp.rationale,
-                                }
-                            )
-                        )
-            elif delta.op == "retire":
-                for hyp in world.get_hypotheses():
-                    if hyp.statement == delta.statement or (
-                        delta.hypothesis_id and hyp.hypothesis_id == delta.hypothesis_id
-                    ):
-                        world.record_hypothesis(
-                            hyp.model_copy(update={"status": HypothesisStatus.RETIRED})
-                        )
-
     def _flush_ai_timeline(self, mission_id: str) -> None:
-        events = getattr(self._events, "events", None)
-        if not isinstance(events, list):
-            return
-        unseen = events[self._ai_event_cursor :]
-        self._ai_event_cursor = len(events)
+        unseen = list(self._events.iter_recent(after=self._ai_event_cursor, limit=1000))
+        self._ai_event_cursor = self._events.emitted_count()
         for event in unseen:
-            et = getattr(event, "event_type", None)
+            et = event.event_type
             value = et.value if et is not None else ""
             if not str(value).startswith("ai."):
                 continue
-            if getattr(event, "mission_id", None) not in {None, mission_id}:
+            if event.mission_id not in {None, mission_id}:
                 continue
-            payload = getattr(event, "payload", None) or {}
+            payload = event.payload or {}
             bits = [
                 str(value),
                 str(payload.get("provider") or ""),
@@ -689,6 +613,52 @@ class MissionEngine:
                 str(payload.get("reason") or ""),
             ]
             self._append_event(mission_id, TimelineKind.AI, " ".join(b for b in bits if b)[:200])
+
+    def _remember_diag(
+        self,
+        mission_id: str,
+        *,
+        action_type: str,
+        status: str,
+        reason: str,
+        previous: str,
+        target: str,
+        retryable: bool,
+    ) -> None:
+        number, label, _more = attempt_display(previous, max_attempts=MAX_ACTION_ATTEMPTS)
+        del number
+        self._diag[mission_id] = {
+            "action_type": action_type,
+            "status": status,
+            "reason": reason,
+            "attempt": label,
+            "retryable": "YES" if retryable else "NO",
+            "target": target,
+        }
+
+    def _action_event(self, action_type: str, exec_status: str | None, mission_id: str) -> str:
+        diag = self._diag.get(mission_id) or {}
+        return format_action_event(
+            action_type,
+            exec_status or "unknown",
+            reason=diag.get("reason", ""),
+            attempt=diag.get("attempt", ""),
+            retryable=diag.get("retryable", ""),
+            target=diag.get("target", ""),
+        )
+
+    def _hydrate_diag(self, mission_id: str) -> None:
+        if mission_id in self._diag:
+            return
+        bundle = self._service.get_bundle(mission_id)
+        for event in reversed(bundle.timeline):
+            if event.kind is not TimelineKind.ACTION:
+                continue
+            parsed = parse_action_event(event.message)
+            if parsed is None:
+                return
+            self._diag[mission_id] = parsed
+            return
 
     def _append_event(self, mission_id: str, kind: TimelineKind, message: str) -> None:
         bundle = self._service.get_bundle(mission_id)
@@ -701,8 +671,7 @@ class MissionEngine:
         )
         bundle.timeline.append(event)
         self._service._store.save(bundle)
-        if store_has(self._store, "append_timeline"):
-            self._store.append_timeline(event)
+        self._persist.append_timeline(event)
 
     def _note_progress(
         self, mission_id: str, world: InMemoryWorldModel, evidence_added: int
@@ -718,10 +687,7 @@ class MissionEngine:
 
     def _remember_trace(self, mission_id: str, trace: DecisionTrace) -> None:
         self._traces.setdefault(mission_id, []).append(trace)
-        if store_has(self._store, "save_decision_trace"):
-            self._store.save_decision_trace(
-                mission_id, trace.iteration, json.dumps(trace.compact())
-            )
+        self._persist.save_trace(mission_id, trace.iteration, json.dumps(trace.compact()))
 
     def _persist_cycle(
         self,
@@ -731,23 +697,12 @@ class MissionEngine:
         trace: DecisionTrace | None = None,
     ) -> None:
         del trace
-        store = self._store
-        if store is None:
-            return
-        if store_has(store, "transaction"):
-            with store.transaction():
-                if store_has(store, "persist_world"):
-                    store.persist_world(world)
-                if store_has(store, "save_runtime"):
-                    store.save_runtime(
-                        mission_id,
-                        self._failures.get(mission_id, 0),
-                        self._stalls.get(mission_id, 0),
-                        world.revision,
-                        len(list(world.get_recent_evidence(limit=10000))),
-                    )
-        elif store_has(store, "persist_world"):
-            store.persist_world(world)
+        self._persist.persist_cycle(
+            mission_id,
+            world,
+            self._failures.get(mission_id, 0),
+            self._stalls.get(mission_id, 0),
+        )
 
     def _report(
         self,
@@ -785,35 +740,3 @@ class MissionEngine:
             policy_verdict=policy_verdict,
             execution_status=execution_status,
         )
-
-
-def store_has(store: Any, name: str) -> bool:
-    return store is not None and hasattr(store, name)
-
-
-def _unavailable_event(adapter_name: str) -> str:
-    token = (adapter_name or "").lower()
-    if "nmap" in token:
-        return "nmap unavailable"
-    if "directory" in token:
-        return "directory enumeration transport unavailable"
-    if "http" in token or "tech" in token or "endpoint" in token:
-        return "HTTP transport unavailable"
-    if "dns" in token or "subdomain" in token:
-        return "DNS resolver unavailable"
-    return f"adapter unavailable: {adapter_name}"
-
-
-def _target_token(target: Any) -> str:
-    current = getattr(target, "current_locator", None)
-    if current:
-        return str(current)
-    kind = getattr(getattr(target, "kind", None), "value", "")
-    if kind == "url":
-        host = getattr(target, "normalized", "") or ""
-        if "://" in host:
-            from urllib.parse import urlsplit
-
-            return urlsplit(host).hostname or host
-        return host
-    return str(getattr(target, "normalized", "") or getattr(target, "raw_input", "") or "")

@@ -9,10 +9,19 @@ from pydantic import ValidationError
 from cyberx.actions.catalog import DEFAULT_CATALOG, ActionCatalog
 from cyberx.actions.coverage import coverage_key
 from cyberx.actions.specs import ActionSpec
+from cyberx.brain.dedup import merge_candidates
+from cyberx.brain.locators import (
+    host_address,
+    hosts,
+    hosts_for_ip_actions,
+    locator_is_obsolete,
+    network_blocks_ip,
+)
 from cyberx.brain.types import CandidateAction
 from cyberx.domain.enums import V1_ACTION_TYPES, MissionMode
 from cyberx.domain.errors import DomainValidationError
 from cyberx.domain.models.actions import ActionTarget
+from cyberx.domain.models.context import AssetContext, GapContext, PathContext, ValidationContext
 from cyberx.domain.models.findings import BrainContext
 
 GAP_ACTIONS: dict[str, tuple[str, ...]] = {
@@ -40,81 +49,36 @@ IP_GATED_ACTIONS = frozenset(
         "endpoint_discovery",
     }
 )
-_BLOCKING_REACHABILITY = frozenset({"ROUTE_MISSING", "UNREACHABLE", "BLOCKED"})
 
 
-def _index(ctx: BrainContext) -> dict[str, dict[str, str]]:
-    out: dict[str, dict[str, str]] = {}
+def _index(ctx: BrainContext) -> dict[str, AssetContext]:
+    out: dict[str, AssetContext] = {}
     for row in ctx.top_assets:
-        if row.get("id"):
-            out[row["id"]] = row
-        if row.get("key"):
-            out[row["key"]] = row
+        if row.id:
+            out[row.id] = row
+        if row.key:
+            out[row.key] = row
     return out
 
 
-def _hosts(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "host"]
+def _ports(ctx: BrainContext) -> list[AssetContext]:
+    return [row for row in ctx.top_assets if row.kind == "port"]
 
 
-def _obsolete_locators(ctx: BrainContext) -> set[str]:
-    ident = ctx.target_identity or {}
-    current = ident.get("current") or ""
-    tokens = [p for p in (ident.get("historical") or "").split(",") if p]
-    out = {p for p in tokens if p != current}
-    previous = ident.get("previous") or ""
-    if previous and previous != current:
-        out.add(previous)
-    return out
+def _services(ctx: BrainContext) -> list[AssetContext]:
+    return [row for row in ctx.top_assets if row.kind == "service"]
 
 
-def _hosts_for_ip_actions(ctx: BrainContext) -> list[dict[str, str]]:
-    obsolete = _obsolete_locators(ctx)
-    current = (ctx.target_identity or {}).get("current") or ctx.network.get("target_ip") or ""
-    live: list[dict[str, str]] = []
-    for host in _hosts(ctx):
-        labels = host.get("labels") or ""
-        if "historical" in labels.split(","):
-            continue
-        addr = _host_address(host)
-        if addr in obsolete:
-            continue
-        live.append(host)
-    if current:
-        matching = [h for h in live if _host_address(h) == current]
-        if matching:
-            return matching
-    return live
+def _urls(ctx: BrainContext) -> list[AssetContext]:
+    return [row for row in ctx.top_assets if row.kind == "url"]
 
 
-def _locator_obsolete(ctx: BrainContext, locator: str) -> bool:
-    if not locator:
-        return False
-    return locator in _obsolete_locators(ctx)
+def _domains(ctx: BrainContext) -> list[AssetContext]:
+    return [row for row in ctx.top_assets if row.kind == "domain"]
 
 
-def _ports(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "port"]
-
-
-def _services(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "service"]
-
-
-def _urls(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "url"]
-
-
-def _domains(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "domain"]
-
-
-def _networks(ctx: BrainContext) -> list[dict[str, str]]:
-    return [r for r in ctx.top_assets if r.get("kind") == "network"]
-
-
-def _host_address(host: dict[str, str]) -> str:
-    return host.get("address") or host.get("key", "").split(":")[-1]
+def _networks(ctx: BrainContext) -> list[AssetContext]:
+    return [row for row in ctx.top_assets if row.kind == "network"]
 
 
 def _http_url(host: str, port: int) -> str:
@@ -130,61 +94,46 @@ class Planner:
         self, ctx: BrainContext, catalog: ActionCatalog | None = None
     ) -> list[CandidateAction]:
         cat = catalog or self._catalog
-        seen_keys: set[str] = set(ctx.coverage_keys)
+        covered: set[str] = set(ctx.coverage_keys)
         mode = _parse_mode(ctx.mode)
         out: list[CandidateAction] = []
         assets = _index(ctx)
 
-        if not _hosts(ctx):
+        if not hosts(ctx):
             for net in _networks(ctx):
                 cand = self._make(
                     cat,
                     "network_discovery",
-                    ActionTarget(canonical_locator=net.get("address") or ""),
-                    {"network": net.get("address") or ""},
+                    ActionTarget(canonical_locator=net.address or ""),
+                    {"network": net.address or ""},
                     reason="no hosts discovered",
                     gap_kind="host.unresolved",
-                    seen_keys=seen_keys,
+                    covered=covered,
                     mode=mode,
+                    source="planner",
                 )
                 if cand:
                     out.append(cand)
 
         for gap in ctx.gaps:
-            kind = gap.get("kind") or ""
-            types = GAP_ACTIONS.get(kind, ())
-            subject = assets.get(gap.get("subject_id") or "") or assets.get(
-                gap.get("subject_key") or ""
-            )
+            types = GAP_ACTIONS.get(gap.kind, ())
+            subject = assets.get(gap.subject_id) or assets.get(gap.subject_key)
             for action_type in types:
                 built = self._from_gap(cat, ctx, action_type, gap, subject, assets)
-                for cand in built:
-                    if cand.coverage_key in seen_keys:
-                        continue
-                    seen_keys.add(cand.coverage_key)
-                    out.append(cand)
+                out.extend(built)
 
-        for extra in self._http_from_open_ports(cat, ctx, seen_keys, mode):
-            out.append(extra)
-            seen_keys.add(extra.coverage_key)
+        out.extend(self._http_from_open_ports(cat, ctx, covered, mode))
+        out.extend(self._dns_from_domains(cat, ctx, covered, mode))
+        out.extend(self._from_validation(cat, ctx, covered, mode))
+        out.extend(self._from_paths(cat, ctx, covered, mode))
 
-        for extra in self._dns_from_domains(cat, ctx, seen_keys, mode):
-            out.append(extra)
-            seen_keys.add(extra.coverage_key)
-
-        for extra in self._from_validation(cat, ctx, seen_keys, mode):
-            out.append(extra)
-            seen_keys.add(extra.coverage_key)
-
-        for extra in self._from_paths(cat, ctx, seen_keys, mode):
-            out.append(extra)
-            seen_keys.add(extra.coverage_key)
-
-        unresolved = any(g.get("kind") == "host.unresolved" for g in ctx.gaps)
+        out = [cand for cand in out if cand.coverage_key not in covered]
+        out = merge_candidates(out)
+        unresolved = any(gap.kind == "host.unresolved" for gap in ctx.gaps)
         if unresolved:
-            out = [c for c in out if c.action_type != "subdomain_enumeration"]
-        if _network_blocks_ip(ctx):
-            out = [c for c in out if c.action_type not in IP_GATED_ACTIONS]
+            out = [cand for cand in out if cand.action_type != "subdomain_enumeration"]
+        if network_blocks_ip(ctx):
+            out = [cand for cand in out if cand.action_type not in IP_GATED_ACTIONS]
         return out
 
     def _from_gap(
@@ -192,61 +141,62 @@ class Planner:
         cat: ActionCatalog,
         ctx: BrainContext,
         action_type: str,
-        gap: dict[str, str],
-        subject: dict[str, str] | None,
-        assets: dict[str, dict[str, str]],
+        gap: GapContext,
+        subject: AssetContext | None,
+        assets: dict[str, AssetContext],
     ) -> list[CandidateAction]:
         mode = _parse_mode(ctx.mode)
-        kind = gap.get("kind") or ""
+        kind = gap.kind
         reason = f"gap={kind}"
         prereq = [kind]
         target: ActionTarget | None = None
         params: dict[str, Any] = {}
 
         if action_type == "port_scan":
-            host = subject if subject and subject.get("kind") == "host" else None
-            if host is None and _hosts_for_ip_actions(ctx):
-                host = _hosts_for_ip_actions(ctx)[0]
+            host = subject if subject and subject.kind == "host" else None
+            live = hosts_for_ip_actions(ctx)
+            if host is None and live:
+                host = live[0]
             if host is None:
                 return []
-            address = _host_address(host)
-            if _locator_obsolete(ctx, address):
+            address = host_address(host)
+            if locator_is_obsolete(ctx, address):
                 return []
-            target = ActionTarget(asset_id=host.get("id") or None, canonical_locator=address)
+            target = ActionTarget(asset_id=host.id or None, canonical_locator=address)
             params = {
-                "host_id": host["id"],
+                "host_id": host.id,
                 "address": address,
                 "ports": "top1000",
                 "protocol": "tcp",
             }
         elif action_type == "dns_enumeration":
-            if subject and subject.get("kind") == "domain":
-                fqdn = subject.get("fqdn") or ""
+            if subject and subject.kind == "domain":
+                fqdn = subject.fqdn
                 if not fqdn:
                     return []
-                target = ActionTarget(asset_id=subject.get("id") or None, canonical_locator=fqdn)
+                target = ActionTarget(asset_id=subject.id or None, canonical_locator=fqdn)
                 params = {"fqdn": fqdn}
             else:
-                host = subject if subject else (_hosts(ctx)[0] if _hosts(ctx) else None)
-                fqdn = (host or {}).get("address") or (host or {}).get("key", "").split(":")[-1]
+                host = subject if subject else (hosts(ctx)[0] if hosts(ctx) else None)
+                fqdn = (host.address if host else "") or (host.key.split(":")[-1] if host else "")
                 if not fqdn:
                     return []
                 target = ActionTarget(
-                    asset_id=(host or {}).get("id") or None, canonical_locator=fqdn
+                    asset_id=(host.id if host else None) or None, canonical_locator=fqdn
                 )
                 params = {"fqdn": fqdn}
         elif action_type == "service_enumeration":
             host = _host_for_port(ctx, subject, assets)
             if host is None:
                 return []
-            address = _host_address(host)
-            if _locator_obsolete(ctx, address):
+            address = host_address(host)
+            if locator_is_obsolete(ctx, address):
                 return []
             port_num = None
-            if subject and subject.get("kind") == "port" and subject.get("number"):
-                port_num = int(subject["number"])
-            target = ActionTarget(asset_id=host.get("id") or None, canonical_locator=address)
-            params = {"host_id": host["id"]}
+            if subject and subject.kind == "port" and subject.number:
+                port_num = int(subject.number)
+            target = ActionTarget(asset_id=host.id or None, canonical_locator=address)
+            params = {"host_id": host.id}
             if port_num:
                 params["port"] = port_num
         elif action_type == "http_probe":
@@ -258,18 +208,18 @@ class Planner:
             url = _pick_url(ctx, subject)
             if url is None:
                 return []
-            locator = url.get("url") or ""
-            target = ActionTarget(asset_id=url.get("id") or None, canonical_locator=locator)
-            params = {"url_id": url["id"], "url": locator}
+            locator = url.url
+            target = ActionTarget(asset_id=url.id or None, canonical_locator=locator)
+            params = {"url_id": url.id, "url": locator}
         elif action_type == "directory_enumeration":
             url = _pick_url(ctx, subject)
             if url is None:
-                url = _url_from_service(ctx, subject, assets)
+                url = _url_from_service(ctx)
             if url is None:
                 return []
-            locator = url.get("url") or ""
-            target = ActionTarget(asset_id=url.get("id") or None, canonical_locator=locator)
-            params = {"url_id": url.get("id"), "url": locator, "wordlist": "small"}
+            locator = url.url
+            target = ActionTarget(asset_id=url.id or None, canonical_locator=locator)
+            params = {"url_id": url.id, "url": locator, "wordlist": "small"}
             if not params.get("url_id"):
                 params.pop("url_id", None)
         elif action_type == "endpoint_discovery":
@@ -278,25 +228,25 @@ class Planner:
                 url = _pick_url(ctx, None)
             if url is None:
                 return []
-            locator = url.get("url") or ""
-            if not url.get("id"):
+            locator = url.url
+            if not url.id:
                 return []
-            target = ActionTarget(asset_id=url.get("id") or None, canonical_locator=locator)
-            params = {"url_id": url["id"], "url": locator}
+            target = ActionTarget(asset_id=url.id or None, canonical_locator=locator)
+            params = {"url_id": url.id, "url": locator}
         elif action_type == "subdomain_enumeration":
-            domain = subject if subject and subject.get("kind") == "domain" else None
+            domain = subject if subject and subject.kind == "domain" else None
             if domain is None and _domains(ctx):
                 domain = _domains(ctx)[0]
             if domain is None:
                 return []
-            fqdn = domain.get("fqdn") or ""
-            target = ActionTarget(asset_id=domain.get("id") or None, canonical_locator=fqdn)
-            params = {"domain_id": domain["id"], "fqdn": fqdn, "wordlist": "default"}
+            fqdn = domain.fqdn
+            target = ActionTarget(asset_id=domain.id or None, canonical_locator=fqdn)
+            params = {"domain_id": domain.id, "fqdn": fqdn, "wordlist": "default"}
         elif action_type == "network_discovery":
             nets = _networks(ctx)
             if not nets:
                 return []
-            cidr = nets[0].get("address") or ""
+            cidr = nets[0].address
             target = ActionTarget(canonical_locator=cidr)
             params = {"network": cidr}
         else:
@@ -311,63 +261,64 @@ class Planner:
             params,
             reason=reason,
             gap_kind=kind,
-            gap_subject=gap.get("subject_id") or "",
+            gap_subject=gap.subject_id,
             prerequisites=prereq,
-            seen_keys=set(),
+            covered=set(),
             mode=mode,
+            source="planner",
         )
         return [cand] if cand else []
 
     def _http_probe_params(
         self,
         ctx: BrainContext,
-        subject: dict[str, str] | None,
-        assets: dict[str, dict[str, str]],
+        subject: AssetContext | None,
+        assets: dict[str, AssetContext],
     ) -> tuple[ActionTarget, dict[str, Any]] | None:
         url = _pick_url(ctx, subject)
         if url is not None:
-            locator = url.get("url") or ""
+            locator = url.url
             return (
-                ActionTarget(asset_id=url.get("id") or None, canonical_locator=locator),
+                ActionTarget(asset_id=url.id or None, canonical_locator=locator),
                 {"url": locator},
             )
         host, port = _http_host_port(ctx, subject, assets)
         if host is None or port is None:
             return None
-        address = _host_address(host)
-        if _locator_obsolete(ctx, address):
+        address = host_address(host)
+        if locator_is_obsolete(ctx, address):
             return None
         locator = _http_url(address, port)
         scheme = "https" if port in HTTPS_PORTS else "http"
         return (
-            ActionTarget(asset_id=host.get("id") or None, canonical_locator=locator),
-            {"host_id": host["id"], "port": port, "scheme": scheme, "url": locator},
+            ActionTarget(asset_id=host.id or None, canonical_locator=locator),
+            {"host_id": host.id, "port": port, "scheme": scheme, "url": locator},
         )
 
     def _http_from_open_ports(
         self,
         cat: ActionCatalog,
         ctx: BrainContext,
-        seen_keys: set[str],
+        covered: set[str],
         mode: MissionMode,
     ) -> list[CandidateAction]:
         out: list[CandidateAction] = []
         assets = _index(ctx)
-        existing_urls = {(u.get("host"), u.get("port")) for u in _urls(ctx)}
+        existing_urls = {(url.host, url.port) for url in _urls(ctx)}
         for port in _ports(ctx):
-            if port.get("state") != "open":
+            if port.state != "open":
                 continue
             try:
-                number = int(port.get("number") or "0")
+                number = int(port.number or "0")
             except ValueError:
                 continue
             if number not in HTTP_PORTS:
                 continue
-            host = assets.get(port.get("host_id") or "")
+            host = assets.get(port.host_id)
             if host is None:
                 continue
-            address = _host_address(host)
-            if _locator_obsolete(ctx, address):
+            address = host_address(host)
+            if locator_is_obsolete(ctx, address):
                 continue
             if (address, str(number)) in existing_urls:
                 continue
@@ -376,9 +327,9 @@ class Planner:
             cand = self._make(
                 cat,
                 "http_probe",
-                ActionTarget(asset_id=host.get("id") or None, canonical_locator=locator),
+                ActionTarget(asset_id=host.id or None, canonical_locator=locator),
                 {
-                    "host_id": host["id"],
+                    "host_id": host.id,
                     "port": number,
                     "scheme": scheme,
                     "url": locator,
@@ -386,39 +337,40 @@ class Planner:
                 reason="gap=service.http_unprobed",
                 gap_kind="service.http_unprobed",
                 prerequisites=["service.http_unprobed", "port.service_unknown"],
-                seen_keys=seen_keys,
+                covered=covered,
                 mode=mode,
+                source="planner",
             )
             if cand:
                 out.append(cand)
-                seen_keys.add(cand.coverage_key)
         return out
 
     def _dns_from_domains(
         self,
         cat: ActionCatalog,
         ctx: BrainContext,
-        seen_keys: set[str],
+        covered: set[str],
         mode: MissionMode,
     ) -> list[CandidateAction]:
-        has_record = any(c.get("predicate") == "dns.record" for c in ctx.claims)
+        has_record = any(claim.predicate == "dns.record" for claim in ctx.claims)
         if has_record:
             return []
         out: list[CandidateAction] = []
         for domain in _domains(ctx):
-            fqdn = domain.get("fqdn") or ""
+            fqdn = domain.fqdn
             if not fqdn:
                 continue
             cand = self._make(
                 cat,
                 "dns_enumeration",
-                ActionTarget(asset_id=domain.get("id") or None, canonical_locator=fqdn),
+                ActionTarget(asset_id=domain.id or None, canonical_locator=fqdn),
                 {"fqdn": fqdn},
                 reason="domain has no dns records",
                 gap_kind="domain.subdomains_unknown",
                 prerequisites=[],
-                seen_keys=seen_keys,
+                covered=covered,
                 mode=mode,
+                source="planner",
             )
             if cand:
                 out.append(cand)
@@ -428,31 +380,31 @@ class Planner:
         self,
         cat: ActionCatalog,
         ctx: BrainContext,
-        seen_keys: set[str],
+        covered: set[str],
         mode: MissionMode,
     ) -> list[CandidateAction]:
         out: list[CandidateAction] = []
         for row in ctx.validation_candidates:
-            if row.get("status") != "proposed":
+            if row.status != "proposed":
                 continue
-            action_type = row.get("action") or ""
+            action_type = row.action
             if action_type not in V1_ACTION_TYPES:
                 continue
             if action_type == "endpoint_discovery" and (
-                any(a.get("kind") == "endpoint" for a in ctx.top_assets)
-                or any(c.get("predicate") == "endpoint.seen" for c in ctx.claims)
+                any(asset.kind == "endpoint" for asset in ctx.top_assets)
+                or any(claim.predicate == "endpoint.seen" for claim in ctx.claims)
             ):
                 continue
-            locator = row.get("locator") or row.get("url") or ""
+            locator = row.locator or row.url
             if not locator:
                 continue
-            if _locator_obsolete(ctx, locator):
+            if locator_is_obsolete(ctx, locator):
                 continue
             params = _params_from_validation(action_type, row, locator)
             if params is None:
                 continue
             target = ActionTarget(
-                asset_id=row.get("asset_id") or None,
+                asset_id=row.asset_id or None,
                 canonical_locator=locator,
             )
             cand = self._make(
@@ -460,51 +412,51 @@ class Planner:
                 action_type,
                 target,
                 params,
-                reason=row.get("reason") or "validation candidate",
+                reason=row.reason or "validation candidate",
                 gap_kind="",
                 prerequisites=list(cat.get(action_type).prerequisites_gap_kinds)
                 if cat.get(action_type)
                 else [],
-                seen_keys=seen_keys,
+                covered=covered,
                 mode=mode,
-                gap_subject=row.get("finding_id") or "",
+                gap_subject=row.finding_id,
+                source="validation",
             )
             if cand is None:
                 continue
             cand = cand.model_copy(update={"expected_information_gain": 0.65})
             out.append(cand)
-            seen_keys.add(cand.coverage_key)
         return out
 
     def _from_paths(
         self,
         cat: ActionCatalog,
         ctx: BrainContext,
-        seen_keys: set[str],
+        covered: set[str],
         mode: MissionMode,
     ) -> list[CandidateAction]:
         out: list[CandidateAction] = []
         for row in ctx.investigation_paths:
-            if row.get("oos") == "1":
+            if row.oos == "1":
                 continue
-            action_type = row.get("action") or ""
+            action_type = row.action
             if action_type not in V1_ACTION_TYPES:
                 continue
             if action_type == "endpoint_discovery" and (
-                any(a.get("kind") == "endpoint" for a in ctx.top_assets)
-                or any(c.get("predicate") == "endpoint.seen" for c in ctx.claims)
+                any(asset.kind == "endpoint" for asset in ctx.top_assets)
+                or any(claim.predicate == "endpoint.seen" for claim in ctx.claims)
             ):
                 continue
-            locator = row.get("locator") or row.get("url") or row.get("fqdn") or ""
+            locator = row.locator or row.url or row.fqdn
             if not locator:
                 continue
-            if _locator_obsolete(ctx, locator):
+            if locator_is_obsolete(ctx, locator):
                 continue
             params = _params_from_path(action_type, row, locator)
             if params is None:
                 continue
             target = ActionTarget(
-                asset_id=row.get("asset_id") or row.get("host_id") or row.get("url_id") or None,
+                asset_id=row.asset_id or row.host_id or row.url_id or None,
                 canonical_locator=locator,
             )
             cand = self._make(
@@ -512,20 +464,20 @@ class Planner:
                 action_type,
                 target,
                 params,
-                reason=row.get("questions") or row.get("labels") or "investigation path",
+                reason=row.questions or row.labels or "investigation path",
                 gap_kind="",
                 prerequisites=list(cat.get(action_type).prerequisites_gap_kinds)
                 if cat.get(action_type)
                 else [],
-                seen_keys=seen_keys,
+                covered=covered,
                 mode=mode,
-                gap_subject=row.get("id") or "",
+                gap_subject=row.id,
+                source="path",
             )
             if cand is None:
                 continue
             cand = cand.model_copy(update={"expected_information_gain": 0.62})
             out.append(cand)
-            seen_keys.add(cand.coverage_key)
         return out
 
     def _make(
@@ -537,10 +489,11 @@ class Planner:
         *,
         reason: str,
         gap_kind: str,
-        seen_keys: set[str],
+        covered: set[str],
         mode: MissionMode,
         gap_subject: str = "",
         prerequisites: list[str] | None = None,
+        source: str = "planner",
     ) -> CandidateAction | None:
         spec = cat.get(action_type)
         if spec is None or not spec.enabled:
@@ -553,7 +506,7 @@ class Planner:
         if clean is None:
             return None
         key = coverage_key(action_type, target, clean)
-        if key in seen_keys:
+        if key in covered:
             return None
         prereq = list(prerequisites or spec.prerequisites_gap_kinds)
         return CandidateAction(
@@ -570,12 +523,8 @@ class Planner:
             cost=spec.cost,
             catalog_index=list(V1_ACTION_TYPES).index(action_type),
             timeout_s=spec.default_timeout_s,
+            source=source,
         )
-
-
-def _network_blocks_ip(ctx: BrainContext) -> bool:
-    net = ctx.network or {}
-    return net.get("reachability") in _BLOCKING_REACHABILITY
 
 
 def _validate_params(spec: ActionSpec, params: dict[str, Any]) -> dict[str, Any] | None:
@@ -587,40 +536,40 @@ def _validate_params(spec: ActionSpec, params: dict[str, Any]) -> dict[str, Any]
 
 
 def _params_from_validation(
-    action_type: str, row: dict[str, str], locator: str
+    action_type: str, row: ValidationContext | PathContext, locator: str
 ) -> dict[str, Any] | None:
     if action_type == "http_probe":
-        return {"url": row.get("url") or locator}
+        return {"url": row.url or locator}
     if action_type == "technology_detection":
-        params: dict[str, Any] = {"url": row.get("url") or locator}
-        if row.get("url_id"):
-            params["url_id"] = row["url_id"]
+        params: dict[str, Any] = {"url": row.url or locator}
+        if row.url_id:
+            params["url_id"] = row.url_id
         return params
     if action_type == "endpoint_discovery":
-        params = {"url": row.get("url") or locator}
-        if row.get("url_id"):
-            params["url_id"] = row["url_id"]
+        params = {"url": row.url or locator}
+        if row.url_id:
+            params["url_id"] = row.url_id
         return params
     if action_type == "service_enumeration":
-        host_id = row.get("host_id") or ""
+        host_id = row.host_id
         if not host_id:
             return None
         params = {"host_id": host_id}
-        if row.get("port"):
+        if row.port:
             try:
-                params["port"] = int(row["port"])
+                params["port"] = int(row.port)
             except ValueError:
                 return None
         return params
     return None
 
 
-def _params_from_path(action_type: str, row: dict[str, str], locator: str) -> dict[str, Any] | None:
+def _params_from_path(action_type: str, row: PathContext, locator: str) -> dict[str, Any] | None:
     shared = _params_from_validation(action_type, row, locator)
     if shared is not None:
         return shared
     if action_type == "port_scan":
-        host_id = row.get("host_id") or row.get("asset_id") or ""
+        host_id = row.host_id or row.asset_id
         if not host_id:
             return None
         return {
@@ -630,20 +579,20 @@ def _params_from_path(action_type: str, row: dict[str, str], locator: str) -> di
             "protocol": "tcp",
         }
     if action_type == "dns_enumeration":
-        fqdn = row.get("fqdn") or locator
+        fqdn = row.fqdn or locator
         if not fqdn:
             return None
         return {"fqdn": fqdn}
     if action_type == "subdomain_enumeration":
-        domain_id = row.get("domain_id") or row.get("asset_id") or ""
-        fqdn = row.get("fqdn") or locator
+        domain_id = row.domain_id or row.asset_id
+        fqdn = row.fqdn or locator
         if not domain_id or not fqdn:
             return None
         return {"domain_id": domain_id, "fqdn": fqdn, "wordlist": "default"}
     if action_type == "directory_enumeration":
-        params: dict[str, Any] = {"url": row.get("url") or locator, "wordlist": "small"}
-        if row.get("url_id"):
-            params["url_id"] = row["url_id"]
+        params: dict[str, Any] = {"url": row.url or locator, "wordlist": "small"}
+        if row.url_id:
+            params["url_id"] = row.url_id
         return params
     return None
 
@@ -657,76 +606,72 @@ def _parse_mode(value: str) -> MissionMode:
 
 def _host_for_port(
     ctx: BrainContext,
-    subject: dict[str, str] | None,
-    assets: dict[str, dict[str, str]],
-) -> dict[str, str] | None:
-    if subject and subject.get("kind") == "host":
+    subject: AssetContext | None,
+    assets: dict[str, AssetContext],
+) -> AssetContext | None:
+    if subject and subject.kind == "host":
         return subject
-    if subject and subject.get("kind") == "port":
-        host = assets.get(subject.get("host_id") or "")
+    if subject and subject.kind == "port":
+        host = assets.get(subject.host_id)
         if host:
             return host
-    return _hosts(ctx)[0] if _hosts(ctx) else None
+    live = hosts(ctx)
+    return live[0] if live else None
 
 
-def _pick_url(ctx: BrainContext, subject: dict[str, str] | None) -> dict[str, str] | None:
-    if subject and subject.get("kind") == "url":
+def _pick_url(ctx: BrainContext, subject: AssetContext | None) -> AssetContext | None:
+    if subject and subject.kind == "url":
         return subject
-    if subject and subject.get("kind") == "endpoint":
-        key = subject.get("url") or ""
+    if subject and subject.kind == "endpoint":
+        key = subject.url
         for url in _urls(ctx):
-            if url.get("key") == key or url.get("url") == key:
+            if url.key == key or url.url == key:
                 return url
     urls = _urls(ctx)
     if not urls:
         return None
-    rooted = [u for u in urls if u.get("path") in {"", "/"}]
+    rooted = [url for url in urls if url.path in {"", "/"}]
     return rooted[0] if rooted else urls[0]
 
 
-def _probed_page(ctx: BrainContext) -> dict[str, str] | None:
-    probed = [
-        u for u in _urls(ctx) if u.get("http_status") and u.get("http_status") not in {"", "0"}
-    ]
+def _probed_page(ctx: BrainContext) -> AssetContext | None:
+    probed = [url for url in _urls(ctx) if url.http_status and url.http_status not in {"", "0"}]
     if not probed:
         return None
-    rooted = [u for u in probed if u.get("path") in {"", "/"}]
+    rooted = [url for url in probed if url.path in {"", "/"}]
     return rooted[0] if rooted else probed[0]
 
 
-def _url_from_service(
-    ctx: BrainContext,
-    subject: dict[str, str] | None,
-    assets: dict[str, dict[str, str]],
-) -> dict[str, str] | None:
-    del subject, assets
-    return _urls(ctx)[0] if _urls(ctx) else None
+def _url_from_service(ctx: BrainContext) -> AssetContext | None:
+    urls = _urls(ctx)
+    return urls[0] if urls else None
 
 
 def _http_host_port(
     ctx: BrainContext,
-    subject: dict[str, str] | None,
-    assets: dict[str, dict[str, str]],
-) -> tuple[dict[str, str] | None, int | None]:
-    if subject and subject.get("kind") == "port":
-        host = assets.get(subject.get("host_id") or "")
+    subject: AssetContext | None,
+    assets: dict[str, AssetContext],
+) -> tuple[AssetContext | None, int | None]:
+    live = hosts(ctx)
+    if subject and subject.kind == "port":
+        host = assets.get(subject.host_id)
         try:
-            number = int(subject.get("number") or "0")
+            number = int(subject.number or "0")
         except ValueError:
             number = 0
         return host, number or None
-    if subject and subject.get("kind") == "service":
+    if subject and subject.kind == "service":
         for port in _ports(ctx):
-            if port.get("id") == subject.get("port_id"):
-                host = assets.get(port.get("host_id") or "")
-                return host, int(port.get("number") or "80")
-        host = _hosts(ctx)[0] if _hosts(ctx) else None
+            if port.id == subject.port_id:
+                host = assets.get(port.host_id)
+                return host, int(port.number or "80")
+        host = live[0] if live else None
         return host, 80
-    host = _hosts(ctx)[0] if _hosts(ctx) else None
+    host = live[0] if live else None
     for port in _ports(ctx):
-        if port.get("state") == "open":
+        if port.state == "open":
             try:
-                number = int(port.get("number") or "0")
+                number = int(port.number or "0")
             except ValueError:
                 continue
             if number in HTTP_PORTS:

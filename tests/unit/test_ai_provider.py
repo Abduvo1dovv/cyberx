@@ -141,9 +141,7 @@ def test_valid_grok_hypothesis_response() -> None:
 
 def test_malformed_json_fails_closed() -> None:
     sink = InMemoryEventSink()
-    provider, _t, _i = _provider(
-        [TransportResult(status=200, body=b"not-json {")], sink=sink
-    )
+    provider, _t, _i = _provider([TransportResult(status=200, body=b"not-json {")], sink=sink)
     assert provider.hypothesize(_ctx()) == []
     kinds = [e.event_type for e in sink.events]
     assert EventType.AI_FAILED in kinds
@@ -424,9 +422,13 @@ def test_ai_cannot_create_evidence_or_findings() -> None:
 def test_ai_cannot_create_action_types_or_change_scope_or_execute() -> None:
     from pathlib import Path
 
-    text = Path(__file__).resolve().parents[2].joinpath(
-        "src/cyberx/ai/protocol.py"
-    ).read_text(encoding="utf-8")
+    text = (
+        Path(__file__)
+        .resolve()
+        .parents[2]
+        .joinpath("src/cyberx/ai/protocol.py")
+        .read_text(encoding="utf-8")
+    )
     assert "def execute" not in text
     raw = {
         "hypotheses": [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cyberx.domain.models.evidence import Evidence, Observation
 from cyberx.evidence.factory import EvidenceFactory
+from cyberx.evidence.integrity import verify_raw_artifact
 from cyberx.evidence.registry import ParserRegistry, default_registry
 from cyberx.ports.execution import RawArtifact
 
@@ -20,6 +21,7 @@ class EvidencePipeline:
         self._factory = factory or EvidenceFactory()
 
     def parse(self, artifact: RawArtifact) -> list[Observation]:
+        verify_raw_artifact(artifact)
         return self._registry.parse(artifact)
 
     def wrap(self, observations: list[Observation], artifact: RawArtifact) -> list[Evidence]:

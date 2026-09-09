@@ -18,6 +18,7 @@ from cyberx.domain.enums import (
     HypothesisStatus,
     Risk,
 )
+from cyberx.domain.errors import StorageError
 from cyberx.domain.ids import (
     PREFIX_ACTION,
     PREFIX_FINDING,
@@ -332,4 +333,184 @@ def test_repository_interfaces_are_structural() -> None:
     assert hasattr(store, "insert_evidence")
     assert hasattr(store, "save_action")
     assert hasattr(store, "append_timeline")
+    store.close()
+
+
+def test_resume_without_snapshot_rebuilds_from_evidence(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = MissionService(store)
+    mission = service.create(create_cmd())
+    service.confirm(mission.mission_id)
+    mid = mission.mission_id
+    seeds = service.get_bundle(mid).seed_assets
+    store.save_seed_assets(mid, seeds)
+    ev = make_evidence(mid, "host.alive", True, "host:ipv4:10.10.11.23", reliability=0.95)
+    store.insert_evidence(ev)
+    resumed = store.resume_world(mid)
+    claims = resumed.get_claims()
+    assert claims
+    assert any(c.predicate == "host.alive" for c in claims)
+    store.close()
+
+
+def test_snapshot_then_tail_evidence_is_applied(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = MissionService(store)
+    mission = service.create(create_cmd())
+    service.confirm(mission.mission_id)
+    mid = mission.mission_id
+    seeds = service.get_bundle(mid).seed_assets
+    world = InMemoryWorldModel(mid)
+    world.seed_assets(seeds)
+    first = make_evidence(mid, "host.alive", True, "host:ipv4:10.10.11.23", reliability=0.95)
+    world.apply_evidence(first)
+    store.insert_evidence(first)
+    store.save_seed_assets(mid, seeds)
+    store.persist_world(world)
+    second = make_evidence(
+        mid,
+        "port.state",
+        "open",
+        "port:host:ipv4:10.10.11.23:tcp:22",
+        reliability=0.95,
+    )
+    store.insert_evidence(second)
+    resumed = store.resume_world(mid)
+    predicates = {c.predicate for c in resumed.get_claims()}
+    assert "host.alive" in predicates
+    assert "port.state" in predicates
+    store.close()
+
+
+def test_missing_artifact_on_resume_does_not_invent_facts(tmp_path) -> None:
+    store = _store(tmp_path)
+    service = MissionService(store)
+    mission = service.create(create_cmd())
+    service.confirm(mission.mission_id)
+    mid = mission.mission_id
+    artifact = artifact_from_fixture(
+        "stub/port_scan.json",
+        adapter_name="stub_adapter",
+        media_type="application/json",
+        source_locator="10.10.11.23",
+        mission_id=mid,
+    )
+    path = store.put(artifact)
+    from pathlib import Path
+
+    Path(path).unlink()
+    with pytest.raises(StorageError):
+        store.get_body(artifact.artifact_id, mid)
+    world = store.resume_world(mid)
+    assert world.get_open_ports() == ()
+    store.close()
+
+
+def test_interrupted_persist_recovery_boundaries(tmp_path) -> None:
+    """Crash at persist boundaries A–F. Evidence remains the source of truth."""
+    db = tmp_path / "cyberx.db"
+
+    def open_store() -> SqliteStore:
+        return SqliteStore(db, data_dir=tmp_path)
+
+    store = open_store()
+    service = MissionService(store)
+    mission = service.create(create_cmd())
+    service.confirm(mission.mission_id)
+    mid = mission.mission_id
+    seeds = service.get_bundle(mid).seed_assets
+    store.save_seed_assets(mid, seeds)
+    store.close()
+
+    # A: before action persistence
+    store = open_store()
+    assert store.list_actions(mid) == []
+    resumed = store.resume_world(mid)
+    assert not any(c.predicate == "host.alive" for c in resumed.get_claims())
+    store.close()
+
+    # B: after action persistence (no result)
+    store = open_store()
+    now = utcnow()
+    action = Action(
+        action_id=new_id(PREFIX_ACTION),
+        mission_id=mid,
+        action_type="port_scan",
+        target=ActionTarget(canonical_locator="10.10.11.23"),
+        parameters={"address": "10.10.11.23", "ports": "top1000", "protocol": "tcp"},
+        reason="gap=host.ports_unknown",
+        expected_information_gain=0.8,
+        risk=Risk.LOW,
+        timeout_s=30,
+        status=ActionStatus.RUNNING,
+        coverage_key="c" * 64,
+        created_at=now,
+    )
+    store.save_action(action)
+    store.close()
+    store = open_store()
+    assert store.list_actions(mid)[0].action_id == action.action_id
+    assert store.list_results(mid) == []
+    resumed = store.resume_world(mid)
+    assert resumed.get_open_ports() == ()
+    store.close()
+
+    # C: after result persistence (no evidence)
+    store = open_store()
+    run = ToolRun(
+        tool_run_id=new_id(PREFIX_TOOL_RUN),
+        action_id=action.action_id,
+        adapter_name="stub_adapter",
+        argv=["stub", "port_scan", "10.10.11.23"],
+        started_at=now,
+        status="completed",
+        ended_at=now,
+    )
+    result = ActionResult(
+        result_id=new_id(PREFIX_RESULT),
+        action_id=action.action_id,
+        tool_run_id=run.tool_run_id,
+        status=ActionResultStatus.COMPLETED,
+        started_at=now,
+        ended_at=now,
+    )
+    store.save_tool_run(run)
+    store.save_result(result)
+    store.close()
+    store = open_store()
+    assert store.list_results(mid)
+    resumed = store.resume_world(mid)
+    assert not any(c.predicate == "port.state" for c in resumed.get_claims())
+    store.close()
+
+    # D: after evidence persistence (no snapshot)
+    store = open_store()
+    ev = make_evidence(mid, "host.alive", True, "host:ipv4:10.10.11.23", reliability=0.95)
+    store.insert_evidence(ev)
+    store.close()
+    store = open_store()
+    resumed = store.resume_world(mid)
+    assert any(c.predicate == "host.alive" for c in resumed.get_claims())
+    assert resumed.get_open_ports() == ()
+    store.close()
+
+    # E: after World Model snapshot
+    store = open_store()
+    world = store.resume_world(mid)
+    store.persist_world(world)
+    digest = world.snapshot().digest
+    store.close()
+    store = open_store()
+    resumed = store.resume_world(mid)
+    assert resumed.snapshot().digest == digest
+    store.close()
+
+    # F: after decision trace
+    store = open_store()
+    store.save_decision_trace(mid, 1, '{"iteration":1}')
+    store.close()
+    store = open_store()
+    assert store.list_decision_traces(mid)
+    resumed = store.resume_world(mid)
+    assert resumed.snapshot().digest == digest
     store.close()

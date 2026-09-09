@@ -38,6 +38,11 @@ def _parser() -> argparse.ArgumentParser:
         metavar="TARGET",
         help="observe local routing for TARGET (no scan, no VPN control)",
     )
+    parser.add_argument(
+        "--diagnose",
+        metavar="TARGET",
+        help="safe diagnostic for TARGET (no scan, no secrets)",
+    )
     return parser
 
 
@@ -90,6 +95,36 @@ def run_network_check(target: str) -> int:
     return 0
 
 
+def run_diagnose(target: str, config: AppConfig) -> int:
+    from cyberx.domain.enums import MissionMode
+    from cyberx.domain.errors import TargetValidationError
+    from cyberx.mission.target_parse import parse_target
+
+    print("DIAGNOSE (no scan)")
+    run_doctor(config)
+    print("--- target ---")
+    try:
+        parsed = parse_target(target, mode=MissionMode.CTF)
+        print(f"raw: {target}")
+        print(f"kind: {parsed.kind.value}")
+        print(f"normalized: {parsed.normalized}")
+        print(f"host: {parsed.host or parsed.normalized}")
+        print("current_locator: (mission not started — equals normalized after confirm)")
+    except TargetValidationError as exc:
+        print(f"target invalid: {exc}")
+        return 2
+    print("--- timeouts ---")
+    print(f"nmap_timeout_s: {config.nmap.timeout_s}")
+    print(f"http_timeout_s: {config.http.timeout_s}")
+    print(f"dns_timeout_s: {config.dns.timeout_s}")
+    print(f"ai_timeout_s: {config.provider.timeout_s}")
+    print(f"max_action_attempts: {config.actions.max_attempts}")
+    print("--- network ---")
+    run_network_check(target)
+    print("Scope is not expanded here. Confirm a mission to freeze scope.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
     if args.version:
@@ -103,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(config.runtime.log_level)
     if args.doctor:
         return run_doctor(config)
+    if args.diagnose:
+        return run_diagnose(args.diagnose, config)
     if args.network:
         return run_network_check(args.network)
     try:

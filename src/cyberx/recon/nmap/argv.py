@@ -46,6 +46,21 @@ def bind_args(source_interface: str | None, source_address: str | None) -> list[
     return out
 
 
+def drop_source_address(argv: list[str]) -> list[str]:
+    """Remove -S <addr> only. Keep -e. Never from AI argv."""
+    out: list[str] = []
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token == "-S":
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
 def safe_target(raw: str | None) -> str:
     """Validate a host/CIDR/name token. Rejects flag-like and shell-like values."""
     if raw is None or not str(raw).strip():

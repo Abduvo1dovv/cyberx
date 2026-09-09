@@ -239,6 +239,26 @@ def test_engine_loop_does_not_import_sqlite_or_ai_providers() -> None:
         assert "httpx" not in imported
 
 
+def test_engine_does_not_duck_type_storage_or_event_internals() -> None:
+    for path in _iter("engine"):
+        text = path.read_text(encoding="utf-8")
+        assert "store_has" not in text, f"{path} uses store_has"
+        assert 'getattr(self._events, "events"' not in text
+        assert "hasattr(store" not in text
+        assert "hasattr(self._store" not in text
+
+
+def test_policy_and_world_remain_fail_closed() -> None:
+    policy = (ROOT / "policy" / "engine.py").read_text(encoding="utf-8")
+    assert "fail" in policy.lower() or "deny" in policy.lower()
+    assert "subprocess" not in policy
+    loop = (ROOT / "engine" / "loop.py").read_text(encoding="utf-8")
+    assert "BrainContext" in loop
+    assert loop.count("self._builder.build(") == 1
+    for name in ("persist.py", "observe.py", "hypotheses.py", "apply.py"):
+        assert (ROOT / "engine" / name).is_file()
+
+
 def test_world_imports_only_domain() -> None:
     forbidden = (
         "cyberx.recon",
@@ -508,4 +528,3 @@ def test_grok_provider_has_no_execute_path_or_hardcoded_secrets() -> None:
         body = path.read_text(encoding="utf-8")
         assert "sk-proj-" not in body
         assert "xai-" not in body.lower()
-

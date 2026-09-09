@@ -32,6 +32,7 @@ class ActionLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     concurrency: int = Field(default=1, ge=1, le=1)
+    # Single source of truth for artifact size and retry bound (engine MAX_ACTION_ATTEMPTS).
     max_artifact_bytes: int = Field(default=5_000_000, ge=1)
     max_attempts: int = Field(default=2, ge=1, le=5)
 

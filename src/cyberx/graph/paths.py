@@ -6,6 +6,10 @@ import hashlib
 from collections.abc import Sequence
 from typing import Any
 
+from pydantic import ValidationError
+
+from cyberx.actions.catalog import DEFAULT_CATALOG
+from cyberx.actions.coverage import coverage_key, is_blocking_coverage
 from cyberx.domain.confidence import clamp01
 from cyberx.domain.enums import (
     FORBIDDEN_ACTION_MARKERS,
@@ -14,7 +18,9 @@ from cyberx.domain.enums import (
     GraphNodeKind,
     PortState,
 )
+from cyberx.domain.errors import DomainValidationError
 from cyberx.domain.ids import PREFIX_PATH, generate_ulid
+from cyberx.domain.models.actions import ActionTarget
 from cyberx.domain.models.assets import (
     AuthenticationSurface,
     Domain,
@@ -263,6 +269,7 @@ def _build_path(
     questions, actions = _questions_and_actions(chain, snapshot)
     actions = [a for a in actions if a in V1_ACTION_TYPES]
     actions = [a for a in actions if not any(m in a for m in FORBIDDEN_ACTION_MARKERS)]
+    actions = _drop_exhausted_actions(actions, chain, snapshot)
     locator, action_type, params = _action_payload(actions[0] if actions else "", chain, snapshot)
     relevance = _relevance(chain, kinds)
     confidence = _avg([n.confidence for n in chain if n.confidence > 0] or [0.4])
@@ -384,6 +391,43 @@ def _questions_and_actions(
         if extra not in uniq_a:
             uniq_a.append(extra)
     return uniq_q, uniq_a
+
+
+def _normalized_params(action_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Match Planner._validate_params so coverage_key agrees after failure."""
+    spec = DEFAULT_CATALOG.get(action_type)
+    if spec is None:
+        return dict(params)
+    try:
+        return spec.parameter_schema.model_validate(params).model_dump()
+    except (ValidationError, DomainValidationError, TypeError, ValueError):
+        return dict(params)
+
+
+def _drop_exhausted_actions(
+    actions: list[str], chain: list[GraphNode], snapshot: WorldSnapshot
+) -> list[str]:
+    """PathPlanner must not recommend exhausted / unavailable / illegal catalog actions."""
+    kept: list[str] = []
+    coverage = snapshot.coverage or {}
+    for action_type in actions:
+        locator, _kind, params = _action_payload(action_type, chain, snapshot)
+        if locator:
+            target = ActionTarget(canonical_locator=locator)
+        elif params.get("host_id"):
+            target = ActionTarget(asset_id=params["host_id"])
+        else:
+            kept.append(action_type)
+            continue
+        raw = dict(params)
+        keys = {
+            coverage_key(action_type, target, raw),
+            coverage_key(action_type, target, _normalized_params(action_type, raw)),
+        }
+        if any(is_blocking_coverage(coverage.get(key, "")) for key in keys):
+            continue
+        kept.append(action_type)
+    return kept
 
 
 def _action_payload(
