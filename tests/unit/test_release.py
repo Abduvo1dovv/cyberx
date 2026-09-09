@@ -42,6 +42,9 @@ def test_doctor_does_not_print_api_key(capsys) -> None:
     assert "super-secret-key-xyz" not in out
     assert "nmap" in out
     assert "VPN" in out
+    assert "platform:" in out
+    assert "database:" in out
+    assert "artifact_store:" in out
 
 
 def test_diagnose_does_not_print_secrets_or_scan(monkeypatch, capsys) -> None:

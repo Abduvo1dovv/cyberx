@@ -221,8 +221,8 @@ def test_network_context_is_passed_to_nmap_argv(tmp_path) -> None:
     argv = runner.calls[0]
     assert "-e" in argv
     assert argv[argv.index("-e") + 1] == "tun0"
-    assert "-S" in argv
-    assert argv[argv.index("-S") + 1] == "10.10.15.7"
+    assert "-4" in argv
+    assert "-S" not in argv
     assert argv[-1] == "10.10.11.23"
 
 
@@ -296,6 +296,10 @@ def test_failed_action_dashboard_is_explicit() -> None:
             error_code="process_error",
             attempt="1/2",
             retryable="YES",
+            family="ipv4",
+            interface="tun0",
+            source="10.10.15.212",
+            route="10.129.0.0/16",
         ),
         findings=(),
         hypotheses=(),
@@ -307,6 +311,9 @@ def test_failed_action_dashboard_is_explicit() -> None:
     assert "attempt: 1/2" in text
     assert "retryable: YES" in text
     assert "10.129.246.236" in text
+    assert "family: IPv4" in text
+    assert "interface: tun0" in text
+    assert "source: 10.10.15.212" in text
     assert "COMPLETED" not in text
 
 
@@ -340,13 +347,11 @@ def test_failed_scan_uses_actual_execution_boundary(tmp_path) -> None:
     assert adapter._last_result.exit_code == 1
     argv = adapter._last_argv
     assert argv[0] == "nmap"
+    assert "-4" in argv
     assert "-e" in argv and argv[argv.index("-e") + 1] == "tun0"
     assert argv[-1] == "10.10.11.23"
-    assert "-S" in runner.calls[0]
-    assert runner.calls[0][runner.calls[0].index("-S") + 1] == "10.10.14.5"
-    if len(runner.calls) > 1:
-        assert "-e" in runner.calls[1]
-        assert "-S" not in runner.calls[1]
+    assert "-S" not in runner.calls[0]
+    assert not any(t.lower().startswith("fe80:") for t in runner.calls[0])
     bundle = service.get_bundle(mid)
     outcome = engine._boundary.run(
         ActionRequest(

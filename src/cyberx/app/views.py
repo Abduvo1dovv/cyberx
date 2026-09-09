@@ -61,6 +61,10 @@ class CurrentActionView:
     error_code: str | None = None
     attempt: str | None = None
     retryable: str | None = None
+    family: str | None = None
+    interface: str | None = None
+    source: str | None = None
+    route: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +161,7 @@ class NetworkView:
     current_locator: str = ""
     previous_locator: str = ""
     digest: str = ""
+    family: str = ""
 
 
 @dataclass(frozen=True)

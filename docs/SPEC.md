@@ -839,7 +839,7 @@ priority = clamp01(
 - `TIMEOUT` is transient and **must not** be persisted as a World Model fact or `GAP_KINDS` entry.
 - Tunnel labels are heuristic (`tun`/`tap`/`wg`/`utun` + ARPHRD). Never claim a VPN provider (e.g. “HTB VPN”) without direct evidence.
 - A discovered route CIDR is diagnostic only. It never expands Scope.
-- Adapters consume bind hints only via `ExecutionContext` (`source_interface`, `source_address`) after validation. Nmap may receive modeled `-e`/`-S`. HTTP/DNS must not take arbitrary bind/resolver overrides from AI or the operator.
+- Adapters consume bind hints only via `ExecutionContext` (`source_interface`, `source_address`, `address_family`) after validation. IPv4 Nmap receives modeled `-4` and optional `-e <interface>`. Explicit `-S` is **not** added automatically (dual-stack tunnels otherwise bind IPv6 link-local `fe80::`). IPv6 is conservative (`-6`, optional `-e`). If `-e` still NSOCK-fails, the adapter retries without `-e` (OS routing; not a silent switch to another named interface). HTTP/DNS must not take arbitrary bind/resolver overrides from AI or the operator.
 
 Compact form for BrainContext (selected route/interface only; no full table dump).
 

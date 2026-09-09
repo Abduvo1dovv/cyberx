@@ -141,6 +141,7 @@ def test_optional_bind_flags_are_appended_only_when_valid() -> None:
     plain = build_nmap_argv(action, xml_path="/tmp/scan.xml", timeout_s=180)
     assert "-e" not in plain
     assert "-S" not in plain
+    assert "-4" in plain
     bound = build_nmap_argv(
         action,
         xml_path="/tmp/scan.xml",
@@ -149,10 +150,12 @@ def test_optional_bind_flags_are_appended_only_when_valid() -> None:
         source_address="10.10.14.5",
     )
     assert bound[0] == "nmap"
+    assert "-4" in bound
+    assert "-6" not in bound
     assert "-e" in bound
     assert bound[bound.index("-e") + 1] == "tun0"
-    assert "-S" in bound
-    assert bound[bound.index("-S") + 1] == "10.10.14.5"
+    assert "-S" not in bound
+    assert not any(t.lower().startswith("fe80:") for t in bound)
     assert bound[-1] == "10.10.11.23"
     with pytest.raises(DomainValidationError):
         build_nmap_argv(

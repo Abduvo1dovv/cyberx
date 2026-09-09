@@ -372,6 +372,7 @@ class OperatorFacade:
             current_locator=target.current_locator or target.normalized,
             previous_locator=target.previous_locator() or "",
             digest=net.digest(),
+            family=compact.get("family") or "",
         )
 
     def get_ai_status(self) -> AiStatusView:
@@ -430,6 +431,10 @@ class OperatorFacade:
                 error_code=diag.get("reason") or None,
                 attempt=diag.get("attempt") or None,
                 retryable=diag.get("retryable") or None,
+                family=diag.get("family") or None,
+                interface=diag.get("interface") or None,
+                source=diag.get("source") or None,
+                route=diag.get("route") or None,
             )
         trace = traces[-1]
         score = None
@@ -449,6 +454,10 @@ class OperatorFacade:
             error_code=diag.get("reason") or None,
             attempt=diag.get("attempt") or None,
             retryable=diag.get("retryable") or None,
+            family=diag.get("family") or None,
+            interface=diag.get("interface") or None,
+            source=diag.get("source") or None,
+            route=diag.get("route") or None,
         )
 
     def get_dashboard(self, mission_id: str) -> DashboardView:

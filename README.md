@@ -183,12 +183,14 @@ Live optional markers (off by default): `requires_nmap`, `requires_http`,
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — historical proposal
 - [`docs/CTF_RUNBOOK.md`](docs/CTF_RUNBOOK.md) — operator runbook
 - [`docs/CTF_TEST_PLAN.md`](docs/CTF_TEST_PLAN.md) — authorized-lab test plan
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — NSOCK/tun0, nmap, resume
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---|---|
 | `nmap unavailable` | install nmap, or keep `CYBERX_STUB=1` |
+| NSOCK / bind `fe80` | IPv4 uses `-4` without automatic `-S`; see TROUBLESHOOTING.md |
 | target unreachable | check VPN **outside** CyberX; `--network TARGET` |
 | AI does nothing | expected without a key; deterministic Brain still plans |
 | process killed mid-run | restart, resume the mission from the TUI |

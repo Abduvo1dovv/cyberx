@@ -53,10 +53,11 @@ def test_tun0_route_reaches_nmap_without_bypassing_scope(tmp_path) -> None:
     assert report.execution_status == "completed"
     assert report.evidence_added > 0
     argv = adapter._last_argv
+    assert "-4" in argv
     assert "-e" in argv
     assert argv[argv.index("-e") + 1] == "tun0"
-    assert "-S" in argv
-    assert argv[argv.index("-S") + 1] == "10.10.14.5"
+    assert "-S" not in argv
+    assert not any(t.lower().startswith("fe80:") for t in argv)
     assert "shell=True" not in " ".join(argv)
 
     world = engine.world(mid)

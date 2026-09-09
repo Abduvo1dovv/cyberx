@@ -35,6 +35,24 @@ def _tun0(*, ip: str = "10.10.14.5") -> ObservedInterface:
     )
 
 
+def _tun0_dual_stack(
+    *,
+    ipv4: str = "10.10.15.212",
+    ipv6_ll: str = "fe80::1",
+) -> ObservedInterface:
+    """Linux tun often has IPv4 plus IPv6 link-local. Product code must not bind fe80 for IPv4."""
+    return ObservedInterface(
+        name="tun0",
+        addresses=(
+            ObservedAddress(ip=ipv4, prefix=23, family=4),
+            ObservedAddress(ip=ipv6_ll, prefix=64, family=6),
+        ),
+        operstate="up",
+        arphrd=ARPHRD_NONE,
+        flags=0x1081,
+    )
+
+
 def _tun1() -> ObservedInterface:
     return ObservedInterface(
         name="tun1",
@@ -249,6 +267,37 @@ def scenario_tun0_source_changed(*, ip: str = "10.10.14.17") -> ObservedNetwork:
     )
 
 
+def scenario_dual_stack_tun0(
+    *,
+    ipv4: str = "10.10.15.212",
+    ipv6_ll: str = "fe80::1",
+) -> ObservedNetwork:
+    """tun0 with IPv4 + IPv6 link-local and an IPv4 target route (HTB-style dual-stack)."""
+    via_tun = ObservedRoute(
+        destination="10.129.0.0/16",
+        gateway=None,
+        interface="tun0",
+        metric=50,
+        prefix_len=16,
+    )
+    return ObservedNetwork(
+        interfaces=(_eth0(), _tun0_dual_stack(ipv4=ipv4, ipv6_ll=ipv6_ll)),
+        routes=(_lan_eth(), via_tun, _default_eth()),
+    )
+
+
+def scenario_route_via_dual_stack_tun0(
+    *,
+    ipv4: str = "10.10.14.5",
+    ipv6_ll: str = "fe80::aaaa:bbbb:cccc:dddd",
+) -> ObservedNetwork:
+    """Default lab target via tun0 that also has IPv6 link-local."""
+    return ObservedNetwork(
+        interfaces=(_eth0(), _tun0_dual_stack(ipv4=ipv4, ipv6_ll=ipv6_ll)),
+        routes=(_lan_eth(), _htb_via_tun0(), _default_eth()),
+    )
+
+
 def scenario_tun0_gone() -> ObservedNetwork:
     """tun0 disappeared; only eth0 remains."""
     return ObservedNetwork(
@@ -286,4 +335,6 @@ SCENARIOS: dict[str, ObservedNetwork] = {
     "tun0_source_changed": scenario_tun0_source_changed(),
     "tun0_gone": scenario_tun0_gone(),
     "tun0_reappear": scenario_tun0_reappear(),
+    "dual_stack_tun0": scenario_dual_stack_tun0(),
+    "route_via_dual_stack_tun0": scenario_route_via_dual_stack_tun0(),
 }

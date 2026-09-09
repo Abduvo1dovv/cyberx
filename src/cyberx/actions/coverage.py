@@ -87,6 +87,10 @@ def format_action_event(
     attempt: str = "",
     retryable: str = "",
     target: str = "",
+    family: str = "",
+    interface: str = "",
+    source: str = "",
+    route: str = "",
 ) -> str:
     bits = [action_type, status or "unknown"]
     if reason:
@@ -97,6 +101,14 @@ def format_action_event(
         bits.append(f"retryable={retryable}")
     if target:
         bits.append(f"target={target}")
+    if family:
+        bits.append(f"family={family}")
+    if interface:
+        bits.append(f"interface={interface}")
+    if source:
+        bits.append(f"source={source}")
+    if route:
+        bits.append(f"route={route}")
     return " ".join(bits)[:1000]
 
 
@@ -117,4 +129,8 @@ def parse_action_event(message: str) -> dict[str, str] | None:
         "attempt": fields.get("attempt", ""),
         "retryable": fields.get("retryable", "NO"),
         "target": fields.get("target", ""),
+        "family": fields.get("family", ""),
+        "interface": fields.get("interface", ""),
+        "source": fields.get("source", ""),
+        "route": fields.get("route", ""),
     }

@@ -4,10 +4,12 @@ import pytest
 
 from cyberx.domain.errors import IdentityError
 from cyberx.domain.identity import (
+    address_family,
     domain_key,
     host_key_ipv4,
     host_key_ipv6,
     host_key_name,
+    is_ipv6_link_local,
     parse_http_url,
     port_key,
     tech_key,
@@ -28,6 +30,15 @@ def test_ipv6_canonical_compresses() -> None:
 
 def test_hostname_canonical_lowercases() -> None:
     assert host_key_name("Box.HTB") == "host:name:box.htb"
+
+
+def test_address_family_and_link_local() -> None:
+    assert address_family("10.129.92.49") == "ipv4"
+    assert address_family("2001:db8::1") == "ipv6"
+    assert address_family("box.htb") == "hostname"
+    assert address_family("10.129.0.0/16") == "ipv4"
+    assert is_ipv6_link_local("fe80::1") is True
+    assert is_ipv6_link_local("10.10.15.212") is False
 
 
 def test_domain_key_rejects_single_label() -> None:

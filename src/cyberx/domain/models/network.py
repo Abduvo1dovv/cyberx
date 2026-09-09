@@ -8,6 +8,7 @@ import json
 from pydantic import Field
 
 from cyberx.domain.enums import ReachabilityStatus
+from cyberx.domain.identity import address_family
 from cyberx.domain.models.common import DomainModel
 
 
@@ -96,6 +97,7 @@ class NetworkContext(DomainModel):
         return {
             "target": self.target[:80],
             "target_ip": (self.target_ip or "")[:64],
+            "family": address_family(self.target_ip or self.target),
             "reachability": self.reachability.value,
             "interface": self.selected_interface or "",
             "source": self.source_address or "",

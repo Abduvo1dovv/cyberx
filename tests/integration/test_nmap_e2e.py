@@ -198,5 +198,11 @@ def test_live_nmap_localhost_optional(tmp_path) -> None:
     )
     artifact = adapter.run(action, ctx)
     assert artifact.adapter_name == "nmap_adapter"
+    argv = adapter._last_argv
+    assert "-4" in argv
+    assert "-6" not in argv
+    assert "-S" not in argv
+    assert not any(t.lower().startswith("fe80:") for t in argv)
+    assert argv[-1] == "127.0.0.1"
     # Local scan must not require the internet; XML may be empty if filtered.
     assert artifact.path is None or Path(artifact.path).exists() or artifact.body is not None

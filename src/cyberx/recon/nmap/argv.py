@@ -13,7 +13,7 @@ from cyberx.actions.params import (
     ServiceEnumerationParams,
 )
 from cyberx.domain.errors import DomainValidationError, IdentityError
-from cyberx.domain.identity import normalize_cidr, validate_fqdn
+from cyberx.domain.identity import address_family, is_ipv6_link_local, normalize_cidr, validate_fqdn
 from cyberx.domain.models.actions import Action
 
 NMAP_ACTION_TYPES: tuple[str, ...] = (
@@ -29,8 +29,32 @@ _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 _IFACE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,15}$")
 
 
-def bind_args(source_interface: str | None, source_address: str | None) -> list[str]:
-    """Optional nmap -e/-S. Only modeled, validated values. Never from AI argv."""
+def target_family(raw: str | None) -> str:
+    """ipv4 | ipv6 | hostname. Hostnames default to IPv4 mode in v1 CTF."""
+    return address_family(raw)
+
+
+def family_args(family: str) -> list[str]:
+    """Force nmap address family so dual-stack interfaces cannot bind the other."""
+    if family == "ipv6":
+        return ["-6"]
+    return ["-4"]
+
+
+def bind_args(
+    source_interface: str | None,
+    source_address: str | None = None,
+    *,
+    family: str = "ipv4",
+) -> list[str]:
+    """Optional nmap -e only. Never automatic -S. Never IPv6 link-local.
+
+    IPv4 CTF scans use interface selection (`-e`) plus `-4`. Explicit `-S`
+    caused privilege/bind failures and is not required when routing is correct.
+    A provided source_address is validated then ignored so callers cannot
+    accidentally bind fe80:: on an IPv4 target.
+    """
+    del family
     out: list[str] = []
     if source_interface:
         name = str(source_interface).strip()
@@ -42,7 +66,8 @@ def bind_args(source_interface: str | None, source_address: str | None) -> list[
             addr = ipaddress.ip_address(str(source_address).strip())
         except ValueError as exc:
             raise DomainValidationError("invalid source address") from exc
-        out.extend(["-S", str(addr)])
+        if is_ipv6_link_local(str(addr)):
+            return out
     return out
 
 
@@ -55,6 +80,21 @@ def drop_source_address(argv: list[str]) -> list[str]:
             skip = False
             continue
         if token == "-S":
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
+def drop_interface(argv: list[str]) -> list[str]:
+    """Remove -e <iface> only. Keep family flags. Documented OS-routing fallback."""
+    out: list[str] = []
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token == "-e":
             skip = True
             continue
         out.append(token)
@@ -110,6 +150,12 @@ def _host_timeout_token(timeout_s: int) -> str:
     return f"{seconds}s"
 
 
+def _refuse_link_local(argv: list[str]) -> None:
+    for token in argv:
+        if is_ipv6_link_local(token):
+            raise DomainValidationError("refusing IPv6 link-local nmap bind")
+
+
 def build_nmap_argv(
     action: Action,
     *,
@@ -129,7 +175,6 @@ def build_nmap_argv(
         raise DomainValidationError("invalid nmap xml path")
     retries = str(max(0, min(int(max_retries), 2)))
     host_timeout = _host_timeout_token(timeout_s)
-    bind = bind_args(source_interface, source_address)
 
     if action.action_type == "port_scan":
         try:
@@ -137,10 +182,12 @@ def build_nmap_argv(
         except ValidationError as exc:
             raise DomainValidationError("invalid port_scan parameters") from exc
         target = safe_target(params.address or action.target.canonical_locator)
+        family = target_family(target)
         scan = ["-sU"] if params.protocol == "udp" else ["-sT"]
-        return [
+        argv = [
             binary,
-            *bind,
+            *family_args(family),
+            *bind_args(source_interface, source_address, family=family),
             "-n",
             "-Pn",
             "--max-retries",
@@ -153,6 +200,8 @@ def build_nmap_argv(
             host_timeout,
             target,
         ]
+        _refuse_link_local(argv)
+        return argv
 
     if action.action_type == "service_enumeration":
         try:
@@ -160,10 +209,12 @@ def build_nmap_argv(
         except ValidationError as exc:
             raise DomainValidationError("invalid service_enumeration parameters") from exc
         target = safe_target(action.target.canonical_locator)
+        family = target_family(target)
         port_args = ["-p", str(params.port)] if params.port is not None else ["--top-ports", "100"]
-        return [
+        argv = [
             binary,
-            *bind,
+            *family_args(family),
+            *bind_args(source_interface, source_address, family=family),
             "-n",
             "-Pn",
             "--max-retries",
@@ -177,15 +228,19 @@ def build_nmap_argv(
             host_timeout,
             target,
         ]
+        _refuse_link_local(argv)
+        return argv
 
     try:
         params = NetworkDiscoveryParams.model_validate(action.parameters)
     except ValidationError as exc:
         raise DomainValidationError("invalid network_discovery parameters") from exc
     target = safe_target(params.network)
-    return [
+    family = target_family(target)
+    argv = [
         binary,
-        *bind,
+        *family_args(family),
+        *bind_args(source_interface, source_address, family=family),
         "-n",
         "--max-retries",
         retries,
@@ -196,6 +251,8 @@ def build_nmap_argv(
         host_timeout,
         target,
     ]
+    _refuse_link_local(argv)
+    return argv
 
 
 # referenced so ruff does not drop the constant

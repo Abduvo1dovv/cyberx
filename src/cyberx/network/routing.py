@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 
 from cyberx.domain.enums import ReachabilityStatus
+from cyberx.domain.identity import address_family, is_ipv6_link_local
 from cyberx.network.observer import (
     ARPHRD_NONE,
     TUNNEL_ARPHRD,
@@ -69,19 +70,21 @@ def select_route(
 
 
 def source_address(iface: ObservedInterface | None, target_ip: str | None) -> str | None:
+    """Pick a source IP matching the target family. Never IPv6 link-local for IPv4."""
     if iface is None:
         return None
-    family = 4
-    if target_ip:
-        try:
-            family = ipaddress.ip_address(target_ip).version
-        except ValueError:
-            family = 4
+    wanted = 6 if address_family(target_ip) == "ipv6" else 4
     for addr in iface.addresses:
-        if addr.family == family:
-            return addr.ip
-    if iface.addresses:
-        return iface.addresses[0].ip
+        ip = addr.ip
+        try:
+            parsed = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if parsed.version != wanted:
+            continue
+        if is_ipv6_link_local(ip):
+            continue
+        return ip
     return None
 
 

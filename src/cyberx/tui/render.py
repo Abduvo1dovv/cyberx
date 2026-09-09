@@ -91,6 +91,17 @@ def _bar(closed: int, total: int, width: int = 20) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
+def _family_label(raw: str | None) -> str:
+    token = (raw or "").strip().lower()
+    if token == "ipv4":
+        return "IPv4"
+    if token == "ipv6":
+        return "IPv6"
+    if token == "hostname":
+        return "hostname"
+    return raw or "-"
+
+
 def _network_compact(view: NetworkView | None) -> list[str]:
     if view is None:
         return ["  (not observed)"]
@@ -102,6 +113,7 @@ def _network_compact(view: NetworkView | None) -> list[str]:
         f"  Current: {current}",
         f"  Previous: {previous}",
         f"  Status: {view.reachability}",
+        f"  Family: {_family_label(view.family)}",
         f"  Interface: {view.interface or '-'}",
         f"  Source: {view.source or '-'}",
         f"  Route: {view.route or '-'}",
@@ -150,6 +162,10 @@ def render_dashboard(view: DashboardView, *, color: bool = False) -> str:
             f"  attempt: {a.attempt or '-'}",
             f"  retryable: {a.retryable or '-'}",
             f"  target: {a.target or '-'}",
+            f"  family: {_family_label(a.family)}",
+            f"  interface: {a.interface or '-'}",
+            f"  source: {a.source or '-'}",
+            f"  route: {a.route or '-'}",
         ]
     else:
         action_block = [
@@ -311,6 +327,7 @@ def render_network(view: NetworkView, color: bool = False) -> str:
         f"Current: {view.current_locator or view.target or '-'}",
         f"Previous: {view.previous_locator or '-'}",
         f"Status: {view.reachability}",
+        f"Family: {_family_label(view.family)}",
         _c(color, BOLD, "NETWORK"),
         "--------------------------------",
         f"Interface: {view.interface or '-'}",

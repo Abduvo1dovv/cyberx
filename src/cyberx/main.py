@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+import sqlite3
 import sys
+from pathlib import Path
 
 from cyberx import __release__, __version__
 from cyberx.app.bootstrap import bootstrap
 from cyberx.config import AppConfig
 from cyberx.domain.errors import ConfigurationError
+from cyberx.domain.identity import address_family
 from cyberx.tui.app import ConsoleApp
 from cyberx.tui.io import StdIO
 
@@ -55,13 +58,35 @@ def configure_logging(level: str) -> None:
     )
 
 
+def _db_status(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    try:
+        con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            con.execute("PRAGMA schema_version")
+        finally:
+            con.close()
+    except sqlite3.DatabaseError:
+        return "corrupt"
+    except OSError:
+        return "unreadable"
+    return "ok"
+
+
 def run_doctor(config: AppConfig) -> int:
     nmap = shutil.which(config.nmap.binary)
+    data_dir = Path(config.runtime.data_dir)
+    db_path = data_dir / "cyberx.db"
+    artifacts = data_dir / "missions"
     print(__release__)
     print(f"version: {__version__}")
     print(f"python: {sys.version.split()[0]}")
+    print(f"platform: {sys.platform}")
     print(f"stub_mode: {config.runtime.stub_mode}")
     print(f"data_dir: {config.runtime.data_dir}")
+    print(f"database: {db_path.as_posix()} ({_db_status(db_path)})")
+    print(f"artifact_store: {artifacts.as_posix()}")
     if nmap:
         print(f"nmap: {nmap}")
     else:
@@ -71,6 +96,9 @@ def run_doctor(config: AppConfig) -> int:
         print(f"ai_provider: {ai} (configured)")
     else:
         print(f"ai_provider: {ai} (inactive)")
+    print(f"nmap_timeout_s: {config.nmap.timeout_s}")
+    print(f"http_timeout_s: {config.http.timeout_s}")
+    print(f"dns_timeout_s: {config.dns.timeout_s}")
     print("CyberX is not a VPN client. Connect OpenVPN/WireGuard outside this process.")
     print("Authorized CTF/lab targets only. Policy and Scope remain authoritative.")
     return 0
@@ -81,14 +109,18 @@ def run_network_check(target: str) -> int:
 
     ctx = NetworkResolver().resolve(target)
     compact = ctx.compact()
+    family = compact.get("family") or address_family(compact.get("target_ip") or target)
+    label = {"ipv4": "IPv4", "ipv6": "IPv6"}.get(family, family or "hostname")
     print("NETWORK (informational — not authorization)")
     print(f"Target: {compact.get('target') or target}")
     print(f"Target IP: {compact.get('target_ip') or '-'}")
+    print(f"Family: {label}")
     print(f"Reachability: {compact.get('reachability')}")
     print(f"Interface: {compact.get('interface') or '-'}")
     print(f"Source: {compact.get('source') or '-'}")
     print(f"Route: {compact.get('route') or '-'}")
     print(f"Tunnel: {compact.get('tunnel') or 'none'} (heuristic, unverified)")
+    print(f"Digest: {compact.get('digest') or '-'}")
     if compact.get("diagnostic"):
         print(f"Diagnostic: {compact['diagnostic']}")
     print("No routes, iptables, or VPN state were modified.")

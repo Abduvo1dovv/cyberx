@@ -114,6 +114,7 @@ class ExecutionBoundary:
             reachability="UNKNOWN" if ctx is None else ctx.reachability,
             likely_tunnel=False if ctx is None else ctx.likely_tunnel,
             network_diagnostic="" if ctx is None else ctx.network_diagnostic,
+            address_family="" if ctx is None else ctx.address_family,
         )
         context = context.model_copy(
             update={

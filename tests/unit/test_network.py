@@ -303,7 +303,9 @@ def test_unsupported_platform_is_unknown() -> None:
 
 def test_nmap_bind_args_are_optional_and_validated() -> None:
     assert bind_args(None, None) == []
-    assert bind_args("tun0", "10.10.14.5") == ["-e", "tun0", "-S", "10.10.14.5"]
+    assert bind_args("tun0", "10.10.14.5") == ["-e", "tun0"]
+    assert "-S" not in bind_args("tun0", "10.10.14.5")
+    assert bind_args("tun0", "fe80::1", family="ipv4") == ["-e", "tun0"]
     with pytest.raises(DomainValidationError):
         bind_args("tun0;id", None)
     with pytest.raises(DomainValidationError):

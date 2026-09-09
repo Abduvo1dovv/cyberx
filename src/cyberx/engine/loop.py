@@ -34,6 +34,7 @@ from cyberx.domain.errors import (
     AdapterUnavailable,
     PolicyDeniedError,
 )
+from cyberx.domain.identity import address_family
 from cyberx.domain.ids import PREFIX_TIMELINE, new_id
 from cyberx.domain.models.actions import ActionRequest
 from cyberx.domain.models.findings import TimelineEvent
@@ -372,7 +373,7 @@ class MissionEngine:
                 execution_status=exec_status,
             )
         except AdapterUnavailable as exc:
-            return self._unavailable(mission_id, world, decision, candidate, exc)
+            return self._unavailable(mission_id, world, decision, candidate, exc, net=net)
 
         policy_verdict = "allow"
         exec_status = outcome.result.status.value
@@ -403,6 +404,7 @@ class MissionEngine:
                     previous="",
                     target=locator,
                     retryable=False,
+                    net=net,
                 )
             else:
                 self._remember_diag(
@@ -413,6 +415,7 @@ class MissionEngine:
                     previous="",
                     target=locator,
                     retryable=False,
+                    net=net,
                 )
         else:
             self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
@@ -429,6 +432,7 @@ class MissionEngine:
                 previous=previous,
                 target=locator,
                 retryable=retryable,
+                net=net,
             )
             if self._failures[mission_id] >= MAX_CONSECUTIVE_FAILURES:
                 self._service.complete(mission_id, StopReason.TOO_MANY_FAILURES)
@@ -489,6 +493,7 @@ class MissionEngine:
         decision: Decision,
         candidate: object,
         exc: AdapterUnavailable,
+        net: NetworkContext | None = None,
     ) -> CycleReport:
         exec_status = "unavailable"
         self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
@@ -502,6 +507,7 @@ class MissionEngine:
             previous="",
             target=str(locator),
             retryable=False,
+            net=net,
         )
         self._append_event(
             mission_id,
@@ -624,9 +630,19 @@ class MissionEngine:
         previous: str,
         target: str,
         retryable: bool,
+        net: NetworkContext | None = None,
     ) -> None:
         number, label, _more = attempt_display(previous, max_attempts=MAX_ACTION_ATTEMPTS)
         del number
+        family = ""
+        interface = ""
+        source = ""
+        route = ""
+        if net is not None:
+            family = address_family(net.target_ip or net.target)
+            interface = net.selected_interface or ""
+            source = net.source_address or ""
+            route = net.selected_route or ""
         self._diag[mission_id] = {
             "action_type": action_type,
             "status": status,
@@ -634,6 +650,10 @@ class MissionEngine:
             "attempt": label,
             "retryable": "YES" if retryable else "NO",
             "target": target,
+            "family": family,
+            "interface": interface,
+            "source": source,
+            "route": route,
         }
 
     def _action_event(self, action_type: str, exec_status: str | None, mission_id: str) -> str:
@@ -645,6 +665,10 @@ class MissionEngine:
             attempt=diag.get("attempt", ""),
             retryable=diag.get("retryable", ""),
             target=diag.get("target", ""),
+            family=diag.get("family", ""),
+            interface=diag.get("interface", ""),
+            source=diag.get("source", ""),
+            route=diag.get("route", ""),
         )
 
     def _hydrate_diag(self, mission_id: str) -> None:

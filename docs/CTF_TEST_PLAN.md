@@ -27,6 +27,12 @@ Covered by the suite:
 - report.json / report.md
 - `--version` / `--doctor`
 
+IPv4 dual-stack `tun0` (IPv4 + `fe80::` link-local) must produce an IPv4-safe
+nmap argv (`-4`, optional `-e`, no automatic `-S`, never `fe80`). Failed
+nmap is `process_error`, not completed coverage. Live nmap is
+`@pytest.mark.requires_nmap` and skipped unless `CYBERX_LIVE_NMAP=1`.
+
+
 ## Manual authorized-lab sequence
 
 Use **your** authorized target. Do not hardcode a lab IP in this repo.

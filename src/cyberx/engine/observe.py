@@ -14,6 +14,7 @@ from cyberx.domain.errors import (
     ScopeViolationError,
     TargetValidationError,
 )
+from cyberx.domain.identity import address_family
 from cyberx.domain.models.network import NetworkContext
 from cyberx.network.resolver import NetworkResolver
 from cyberx.ports.events import DomainEvent, EventSink, EventType, emit_safe
@@ -131,6 +132,7 @@ def ingest_locator_evidence(
 
 
 def execution_context(candidate: Any, net: NetworkContext) -> ExecutionContext:
+    family = address_family(net.target_ip or net.target)
     return ExecutionContext(
         mission_id=candidate.target.asset_id or "pending",
         action_id="pending",
@@ -142,6 +144,7 @@ def execution_context(candidate: Any, net: NetworkContext) -> ExecutionContext:
         reachability=net.reachability.value,
         likely_tunnel=net.likely_tunnel,
         network_diagnostic=net.diagnostic[:200],
+        address_family=family,
     )
 
 

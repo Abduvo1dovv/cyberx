@@ -191,15 +191,93 @@ def test_bind_failure_retries_without_source_address(tmp_path) -> None:
         reachability="REACHABLE",
         source_interface="tun0",
         source_address="10.10.15.7",
+        address_family="ipv4",
     )
     executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
     outcome = executor.execute(_authorized(), ctx)
     assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert runner.calls
+    first = runner.calls[0]
+    assert "-4" in first
+    assert "-e" in first
+    assert first[first.index("-e") + 1] == "tun0"
+    assert "-S" not in first
+    assert not any(t.lower().startswith("fe80:") for t in first)
+    assert all("-S" not in call for call in runner.calls)
+
+
+def test_nsock_fe80_retries_without_interface(tmp_path) -> None:
+    xml = _xml("host_22.xml")
+    nsock = (
+        b"NSOCK ERROR mksock_bind_addr() Bind to fe80::aaaa failed: Invalid argument\n"
+    )
+
+    class NsockThenOk:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(self, argv, *, timeout_s, cwd=None):
+            del timeout_s, cwd
+            self.calls.append(list(argv))
+            from cyberx.recon.nmap.process import CommandResult, _output_path
+
+            if "-e" in argv:
+                return CommandResult(argv=list(argv), exit_code=1, stderr=nsock)
+            path = _output_path(argv)
+            if path:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(xml)
+            return CommandResult(argv=list(argv), exit_code=0)
+
+    runner = NsockThenOk()
+    adapter = NmapAdapter(runner=runner, available=True)
+    ctx = ExecutionContext(
+        mission_id=_action().mission_id,
+        action_id=_action().action_id,
+        timeout_s=30,
+        workdir=str(tmp_path),
+        reachability="REACHABLE",
+        source_interface="tun0",
+        source_address="10.10.15.212",
+        address_family="ipv4",
+    )
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "empty_output"
     assert len(runner.calls) == 2
-    assert "-S" in runner.calls[0]
-    assert "-e" in runner.calls[1]
-    assert "-S" not in runner.calls[1]
-    assert runner.calls[1][runner.calls[1].index("-e") + 1] == "tun0"
+    first, second = runner.calls
+    assert "-4" in first and "-e" in first
+    assert first[first.index("-e") + 1] == "tun0"
+    assert "-S" not in first
+    assert not any(t.lower().startswith("fe80:") for t in first)
+    assert "-4" in second
+    assert "-e" not in second
+    assert "-S" not in second
+    assert "eth0" not in second
+    assert second[-1] == "10.10.11.23"
+
+
+def test_nsock_without_xml_is_process_error_not_empty_output(tmp_path) -> None:
+    nsock = b"NSOCK ERROR mksock_bind_addr() Bind to fe80::1 failed: Invalid argument"
+    runner = FixtureProcessRunner(b"", exit_code=1, stderr=nsock)
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    ctx = ExecutionContext(
+        mission_id=_action().mission_id,
+        action_id=_action().action_id,
+        timeout_s=30,
+        workdir=str(tmp_path),
+        reachability="REACHABLE",
+        source_interface="tun0",
+        source_address="10.10.15.212",
+        address_family="ipv4",
+    )
+    outcome = executor.execute(_authorized(), ctx)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "process_error"
+    assert "nsock" in (outcome.result.error_message or "").lower()
+
 
 
 def test_process_runner_is_the_only_subprocess_wrapper() -> None:

@@ -17,6 +17,17 @@ PROCESS_ERROR_MARKERS = (
     "root privileges",
     "need to be root",
     "you requested a scan type which requires root",
+    "nsock",
+    "mksock_bind_addr",
+    "fe80::",
+    "bind to fe80",
+)
+
+NSOCK_BIND_MARKERS = (
+    "nsock",
+    "mksock_bind_addr",
+    "fe80::",
+    "bind to fe80",
 )
 
 
@@ -31,6 +42,12 @@ def stderr_text(raw: bytes | str | None) -> str:
 def looks_like_process_error(stderr: bytes | str | None) -> bool:
     text = stderr_text(stderr).lower()
     return any(marker in text for marker in PROCESS_ERROR_MARKERS)
+
+
+def looks_like_nsock_bind_error(stderr: bytes | str | None) -> bool:
+    """Dual-stack -e bind to IPv6 link-local. Distinct from generic bind/-S errors."""
+    text = stderr_text(stderr).lower()
+    return any(marker in text for marker in NSOCK_BIND_MARKERS)
 
 
 def compact_stderr(stderr: bytes | str | None, *, limit: int = 200) -> str:

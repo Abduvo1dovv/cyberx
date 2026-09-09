@@ -247,3 +247,35 @@ def parse_locator(raw: str) -> tuple[str, str]:
     except IdentityError:
         pass
     return "hostname", validate_fqdn(text, allow_single_label=True)
+
+
+def address_family(raw: str | None) -> str:
+    """Classify a locator as ipv4, ipv6, or hostname. Never raises."""
+    text = (raw or "").strip()
+    if not text:
+        return "hostname"
+    if "://" in text:
+        try:
+            _scheme, host, _port, _path = parse_http_url(text)
+            return address_family(host)
+        except IdentityError:
+            return "hostname"
+    if "/" in text:
+        try:
+            network = ipaddress.ip_network(text, strict=False)
+            return "ipv4" if network.version == 4 else "ipv6"
+        except ValueError:
+            text = text.split("/", 1)[0]
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return "hostname"
+    return "ipv4" if addr.version == 4 else "ipv6"
+
+
+def is_ipv6_link_local(raw: str | None) -> bool:
+    try:
+        addr = ipaddress.ip_address((raw or "").strip())
+    except ValueError:
+        return False
+    return addr.version == 6 and bool(addr.is_link_local)

@@ -38,6 +38,7 @@ class ExecutionContext(DomainModel):
     reachability: str = "UNKNOWN"
     likely_tunnel: bool = False
     network_diagnostic: str = ""
+    address_family: str = ""
 
 
 class RawArtifact(DomainModel):
