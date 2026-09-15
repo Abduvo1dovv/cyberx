@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
 from cyberx.domain.errors import AdapterUnavailable, DomainValidationError
+from cyberx.domain.identity import address_family
 from cyberx.domain.ids import PREFIX_ARTIFACT, PREFIX_TOOL_RUN, new_id
 from cyberx.domain.models.actions import Action
 from cyberx.ports.events import DomainEvent, EventSink, EventType, NullEventSink, emit_safe
@@ -24,6 +26,16 @@ from cyberx.recon.nmap.process import (
     looks_like_nsock_bind_error,
     looks_like_process_error,
 )
+
+_LOG = logging.getLogger("cyberx.nmap")
+
+
+def _absolute_dir(path: Path) -> Path:
+    """Mission workdir / XML dest must be absolute: nmap cwd is the workdir."""
+    resolved = path.expanduser()
+    if not resolved.is_absolute():
+        resolved = Path.cwd() / resolved
+    return resolved.resolve()
 
 
 class NmapAdapter:
@@ -48,6 +60,7 @@ class NmapAdapter:
         self._forced_available = available
         self._last_argv: list[str] = []
         self._last_result: CommandResult | None = None
+        self._last_debug: dict[str, Any] = {}
 
     def is_available(self) -> bool:
         if self._forced_available is not None:
@@ -91,12 +104,13 @@ class NmapAdapter:
 
         tool_run_id = new_id(PREFIX_TOOL_RUN)
         if ctx.workdir:
-            workdir = Path(ctx.workdir)
+            workdir = _absolute_dir(Path(ctx.workdir))
         else:
-            workdir = Path("data") / "missions" / action.mission_id
+            workdir = _absolute_dir(Path("data") / "missions" / action.mission_id)
+        workdir.mkdir(parents=True, exist_ok=True)
         art_dir = workdir / "artifacts" / tool_run_id
         art_dir.mkdir(parents=True, exist_ok=True)
-        xml_path = art_dir / "scan.xml"
+        xml_path = (art_dir / "scan.xml").resolve()
         timeout_s = max(1, int(ctx.timeout_s or 180))
         source_iface = None
         if (ctx.reachability or "") == "REACHABLE":
@@ -108,7 +122,34 @@ class NmapAdapter:
             source_interface=source_iface,
             source_address=None,
         )
+        locator = action.target.canonical_locator or action.target.asset_id
+        family = ctx.address_family or address_family(locator)
         self._last_argv = argv
+        self._last_debug = {
+            "action": action.action_type,
+            "target": locator,
+            "family": family,
+            "interface": source_iface or "",
+            "source": ctx.source_address or "",
+            "argv": list(argv),
+            "cwd": str(workdir),
+            "xml_path": str(xml_path),
+            "timeout_s": timeout_s,
+        }
+        _LOG.debug(
+            "nmap start action=%s type=%s target=%s family=%s interface=%s "
+            "source=%s timeout_s=%s cwd=%s xml=%s argv=%s",
+            action.action_id,
+            action.action_type,
+            locator,
+            family,
+            source_iface or "",
+            ctx.source_address or "",
+            timeout_s,
+            workdir,
+            xml_path,
+            argv,
+        )
         emit_safe(
             self._events,
             DomainEvent(
@@ -118,6 +159,10 @@ class NmapAdapter:
                     "action_id": action.action_id,
                     "action_type": action.action_type,
                     "timeout_s": timeout_s,
+                    "cwd": str(workdir),
+                    "xml_path": str(xml_path),
+                    "family": family,
+                    "interface": source_iface or "",
                 },
             ),
         )
@@ -140,7 +185,23 @@ class NmapAdapter:
                 result = retry
                 self._last_argv = argv
         self._last_result = result
+        self._last_debug["exit_code"] = result.exit_code
+        self._last_debug["timed_out"] = result.timed_out
+        self._last_debug["stdout_bytes"] = len(result.stdout or b"")
+        self._last_debug["stderr_bytes"] = len(result.stderr or b"")
         artifact = self._artifact(action, tool_run_id, xml_path, art_dir, result)
+        self._last_debug["artifact_bytes"] = artifact.byte_size
+        _LOG.debug(
+            "nmap finish action=%s exit=%s timeout=%s stdout_bytes=%s stderr_bytes=%s "
+            "xml_exists=%s xml_bytes=%s",
+            action.action_id,
+            result.exit_code,
+            result.timed_out,
+            len(result.stdout or b""),
+            len(result.stderr or b""),
+            xml_path.is_file(),
+            artifact.byte_size,
+        )
         self._emit_finished(action, result, artifact)
         return artifact
 
@@ -152,6 +213,7 @@ class NmapAdapter:
         art_dir: Path,
         result: CommandResult,
     ) -> RawArtifact:
+        # Success is the -oX file. stdout is often empty when nmap writes XML.
         body = b""
         if xml_path.is_file():
             body = xml_path.read_bytes()

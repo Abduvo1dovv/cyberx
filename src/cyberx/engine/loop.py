@@ -395,12 +395,17 @@ class MissionEngine:
                 artifact=outcome.artifact,
             )
             if not parsed_ok:
+                if exec_status in {"", "failed", "completed"}:
+                    reason = "parse_error"
+                else:
+                    reason = exec_status
+                exec_status = "failed"
                 self._failures[mission_id] = self._failures.get(mission_id, 0) + 1
                 self._remember_diag(
                     mission_id,
                     action_type=candidate.action_type,
                     status=exec_status,
-                    reason="invalid_output",
+                    reason=reason,
                     previous="",
                     target=locator,
                     retryable=False,

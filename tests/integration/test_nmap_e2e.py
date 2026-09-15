@@ -82,7 +82,11 @@ def test_multi_host_marks_out_of_scope(tmp_path) -> None:
 def test_malformed_xml_does_not_crash_engine(tmp_path) -> None:
     _service, mid, engine, _adapter = _engine(tmp_path, "truncated.xml")
     report = engine.run_one_cycle(mid)
-    assert report.execution_status in {"failed", "completed"}
+    assert report.execution_status == "failed"
+    world = engine.world(mid)
+    assert not world.get_open_ports()
+    coverage = world.get_coverage()
+    assert any(str(v).startswith("failed") for v in coverage.values())
     mission = _service.get(mid)
     assert mission.status.value in {"RUNNING", "COMPLETED", "FAILED", "STOPPED"}
 
@@ -168,32 +172,34 @@ def test_fake_nmap_script_via_process_runner(tmp_path) -> None:
 
 
 @pytest.mark.requires_nmap
-def test_live_nmap_localhost_optional(tmp_path) -> None:
+def test_live_nmap_localhost_optional(tmp_path, monkeypatch) -> None:
     if os.environ.get("CYBERX_LIVE_NMAP") != "1":
         pytest.skip("set CYBERX_LIVE_NMAP=1 to run live nmap")
     if shutil.which("nmap") is None:
         pytest.skip("nmap binary is not installed")
+    target = os.environ.get("CYBERX_LIVE_NMAP_TARGET", "127.0.0.1").strip() or "127.0.0.1"
+    monkeypatch.chdir(tmp_path)
     adapter = NmapAdapter()
     assert adapter.is_available()
     action = Action(
         action_id=new_id(PREFIX_ACTION),
         mission_id=new_id(PREFIX_MISSION),
         action_type="port_scan",
-        target=ActionTarget(canonical_locator="127.0.0.1"),
-        parameters={"address": "127.0.0.1", "ports": "specified", "port_list": [1]},
+        target=ActionTarget(canonical_locator=target),
+        parameters={"address": target, "ports": "specified", "port_list": [1]},
         reason="live-check",
         expected_information_gain=0.1,
         risk=Risk.LOW,
         timeout_s=20,
         status=ActionStatus.AUTHORIZED,
-        coverage_key="port_scan:127.0.0.1",
+        coverage_key=f"port_scan:{target}",
         created_at=utcnow(),
     )
     ctx = ExecutionContext(
         mission_id=action.mission_id,
         action_id=action.action_id,
         timeout_s=20,
-        workdir=str(tmp_path),
+        workdir="missions/live-nmap",
         stub=False,
     )
     artifact = adapter.run(action, ctx)
@@ -203,6 +209,59 @@ def test_live_nmap_localhost_optional(tmp_path) -> None:
     assert "-6" not in argv
     assert "-S" not in argv
     assert not any(t.lower().startswith("fe80:") for t in argv)
-    assert argv[-1] == "127.0.0.1"
-    # Local scan must not require the internet; XML may be empty if filtered.
-    assert artifact.path is None or Path(artifact.path).exists() or artifact.body is not None
+    assert argv[-1] == target
+    ox = argv[argv.index("-oX") + 1]
+    assert Path(ox).is_absolute()
+    result = adapter._last_result
+    assert result is not None
+    # Empty stdout is valid when -oX wrote the artifact.
+    if result.exit_code == 0 and not result.timed_out:
+        assert artifact.byte_size > 0
+        assert b"<nmaprun" in (artifact.body or b"")
+        assert Path(ox).is_file()
+
+
+def test_fake_nmap_relative_workdir_empty_stdout_feeds_world(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    script = FIXTURES / "nmap" / "fake_nmap.py"
+    script.chmod(0o755)
+    adapter = NmapAdapter(binary=str(script), runner=ProcessRunner(), available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir="data")
+    service = MissionService(InMemoryMissionStore())
+    mission = service.create(create_cmd())
+    service.confirm(mission.mission_id)
+    service.start(mission.mission_id)
+    engine = MissionEngine(
+        service,
+        boundary=ExecutionBoundary(executor=executor),
+    )
+    first = engine.run_one_cycle(mission.mission_id)
+    assert first.selected_action_type == "port_scan"
+    assert first.execution_status == "completed"
+    ox = adapter._last_argv[adapter._last_argv.index("-oX") + 1]
+    assert Path(ox).is_absolute()
+    assert Path(ox).is_file()
+    assert adapter._last_result is not None
+    assert adapter._last_result.stdout == b""
+    assert adapter._last_result.exit_code == 0
+    world = engine.world(mission.mission_id)
+    numbers = {p.number for p in world.get_open_ports()}
+    assert 22 in numbers
+    assert 80 in numbers
+    second = engine.run_one_cycle(mission.mission_id)
+    assert second.selected_action_type != "port_scan"
+
+
+def test_parser_failure_is_not_completed_coverage(tmp_path) -> None:
+    _service, mid, engine, _adapter = _engine(tmp_path, "truncated.xml")
+    report = engine.run_one_cycle(mid)
+    assert report.execution_status == "failed"
+    assert report.evidence_added == 0
+    world = engine.world(mid)
+    assert not world.get_open_ports()
+    diag = engine._diag.get(mid) or {}
+    assert diag.get("reason") == "parse_error"
+    assert diag.get("status") == "failed"
+    coverage = world.get_coverage()
+    assert coverage
+    assert all(not str(v).startswith("completed") for v in coverage.values())

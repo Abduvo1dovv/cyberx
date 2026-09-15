@@ -99,12 +99,12 @@ def test_timeout_returns_timeout_result(tmp_path) -> None:
 
 
 def test_empty_output_is_failed(tmp_path) -> None:
-    runner = FixtureProcessRunner(b"", exit_code=1)
+    runner = FixtureProcessRunner(b"", exit_code=0)
     adapter = NmapAdapter(runner=runner, available=True)
     executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
     outcome = executor.execute(_authorized(), None)
     assert outcome.result.status is ActionResultStatus.FAILED
-    assert outcome.result.error_code == "empty_output"
+    assert outcome.result.error_code == "empty_artifact"
 
 
 def test_nonzero_exit_with_xml_is_completed(tmp_path) -> None:
@@ -256,6 +256,124 @@ def test_nsock_fe80_retries_without_interface(tmp_path) -> None:
     assert "-S" not in second
     assert "eth0" not in second
     assert second[-1] == "10.10.11.23"
+
+
+def test_stdout_empty_with_valid_ox_xml_is_success(tmp_path) -> None:
+    """nmap -oX writes the file; empty stdout must not be classified as failure."""
+    runner = FixtureProcessRunner(_xml("host_22_80.xml"), exit_code=0, stderr=b"")
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code is None
+    assert outcome.artifact.byte_size > 0
+    assert b"<nmaprun" in (outcome.artifact.body or b"")
+    ox = adapter._last_argv[adapter._last_argv.index("-oX") + 1]
+    assert Path(ox).is_absolute()
+    assert Path(ox).is_file()
+    assert adapter._last_result is not None
+    assert adapter._last_result.stdout == b""
+    assert adapter._last_result.exit_code == 0
+
+
+def test_relative_workdir_ox_path_is_absolute_and_readable(tmp_path, monkeypatch) -> None:
+    """Regression: relative -oX + cwd=workdir made nmap write XML where CyberX did not read it."""
+    monkeypatch.chdir(tmp_path)
+    xml = _xml("host_22_80.xml")
+
+    class CwdHonoringRunner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(self, argv, *, timeout_s, cwd=None):
+            del timeout_s
+            self.calls.append(list(argv))
+            from cyberx.recon.nmap.process import CommandResult, _output_path
+
+            dest = _output_path(argv)
+            assert dest is not None
+            path = Path(dest)
+            if not path.is_absolute():
+                path = Path(cwd or ".") / path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(xml)
+            return CommandResult(
+                argv=list(argv),
+                exit_code=0,
+                stdout=b"",
+                stderr=b"",
+                xml_path=str(path),
+            )
+
+    runner = CwdHonoringRunner()
+    adapter = NmapAdapter(runner=runner, available=True)
+    ctx = ExecutionContext(
+        mission_id=_action().mission_id,
+        action_id=_action().action_id,
+        timeout_s=30,
+        workdir="missions/rel-ox",
+        stub=False,
+        reachability="REACHABLE",
+        source_interface="tun0",
+        source_address="10.10.15.212",
+        address_family="ipv4",
+    )
+    artifact = adapter.run(_action(), ctx)
+    assert artifact.byte_size > 0
+    assert b"<nmaprun" in (artifact.body or b"")
+    ox = adapter._last_argv[adapter._last_argv.index("-oX") + 1]
+    assert Path(ox).is_absolute()
+    assert Path(ox).is_file()
+    assert Path(ox).read_bytes() == xml
+    nested = tmp_path / "missions/rel-ox" / "missions/rel-ox"
+    assert not nested.exists()
+    debug = adapter._last_debug
+    assert debug["cwd"].startswith(str(tmp_path))
+    assert Path(debug["xml_path"]).is_absolute()
+    assert "-4" in adapter._last_argv
+    assert "-e" in adapter._last_argv
+    assert "-S" not in adapter._last_argv
+
+
+def test_nonzero_exit_without_xml_is_process_error(tmp_path) -> None:
+    runner = FixtureProcessRunner(b"", exit_code=1, write_xml=False, stderr=b"QUITTING!\n")
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "process_error"
+
+
+def test_missing_xml_is_empty_artifact(tmp_path) -> None:
+    runner = FixtureProcessRunner(b"", exit_code=0, write_xml=False)
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "empty_artifact"
+    assert outcome.result.error_code != "empty_output"
+
+
+def test_malformed_xml_is_invalid_output(tmp_path) -> None:
+    runner = FixtureProcessRunner(_xml("malformed.xml"), exit_code=0)
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "invalid_output"
+
+
+def test_stderr_warning_with_valid_xml_is_success(tmp_path) -> None:
+    runner = FixtureProcessRunner(
+        _xml("host_22.xml"),
+        exit_code=0,
+        stderr=b"Warning: Hostname did not resolve\n",
+    )
+    adapter = NmapAdapter(runner=runner, available=True)
+    executor = ReconExecutor(nmap=adapter, nmap_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(), None)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code is None
 
 
 def test_nsock_without_xml_is_process_error_not_empty_output(tmp_path) -> None:

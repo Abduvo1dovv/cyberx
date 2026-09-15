@@ -81,10 +81,18 @@ class ProcessRunner:
         if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
             raise ValueError("argv must be a non-empty list of strings")
         timeout = max(1, int(timeout_s))
+        workdir = None
+        if cwd:
+            workdir_path = Path(cwd).expanduser()
+            if not workdir_path.is_absolute():
+                workdir_path = Path.cwd() / workdir_path
+            workdir_path = workdir_path.resolve()
+            workdir_path.mkdir(parents=True, exist_ok=True)
+            workdir = str(workdir_path)
         try:
             completed = subprocess.run(  # noqa: S603
                 argv,
-                cwd=cwd,
+                cwd=workdir,
                 capture_output=True,
                 timeout=timeout,
                 check=False,
@@ -101,17 +109,22 @@ class ProcessRunner:
                 stdout=stdout if isinstance(stdout, bytes) else b"",
                 stderr=stderr if isinstance(stderr, bytes) else b"",
                 timed_out=True,
+                xml_path=_output_path(argv),
             )
         return CommandResult(
             argv=list(argv),
             exit_code=int(completed.returncode),
             stdout=completed.stdout or b"",
             stderr=completed.stderr or b"",
+            xml_path=_output_path(argv),
         )
 
 
 class FixtureProcessRunner:
-    """Test double. Writes provided XML to the -oX path. No real Nmap."""
+    """Test double. Writes provided XML to the -oX path. No real Nmap.
+
+    Relative -oX paths are resolved against `cwd`, matching real nmap.
+    """
 
     def __init__(
         self,
@@ -121,12 +134,14 @@ class FixtureProcessRunner:
         timed_out: bool = False,
         stderr: bytes = b"",
         missing_binary: bool = False,
+        write_xml: bool = True,
     ) -> None:
         self.xml = xml
         self.exit_code = exit_code
         self.timed_out = timed_out
         self.stderr = stderr
         self.missing_binary = missing_binary
+        self.write_xml = write_xml
         self.calls: list[list[str]] = []
 
     def run(
@@ -136,22 +151,26 @@ class FixtureProcessRunner:
         timeout_s: int,
         cwd: str | None = None,
     ) -> CommandResult:
-        del timeout_s, cwd
+        del timeout_s
         self.calls.append(list(argv))
         if self.missing_binary:
             return CommandResult(argv=list(argv), exit_code=127, stderr=b"executable not found")
         xml_path = _output_path(argv)
-        if xml_path and not self.timed_out:
+        dest = xml_path
+        if xml_path and self.write_xml and not self.timed_out:
             path = Path(xml_path)
+            if not path.is_absolute() and cwd:
+                path = Path(cwd) / path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(self.xml)
+            dest = str(path)
         return CommandResult(
             argv=list(argv),
             exit_code=self.exit_code,
             stdout=b"",
             stderr=self.stderr,
             timed_out=self.timed_out,
-            xml_path=xml_path,
+            xml_path=dest,
         )
 
 

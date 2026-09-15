@@ -24,6 +24,7 @@ RETRYABLE_ERROR_CODES = frozenset(
         "timeout",
         "adapter_crash",
         "empty_output",
+        "empty_artifact",
         "process_error",
     }
 )

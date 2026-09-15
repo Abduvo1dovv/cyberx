@@ -1220,7 +1220,7 @@ Unknown `action_type` → `REJECTED` immediately. Never queued.
 
 ## 5.4 Retry
 
-Retry if `error_code` in `{timeout, adapter_crash, empty_output}` AND `attempt < max_attempts` AND mission still RUNNING.
+Retry if `error_code` in `{timeout, adapter_crash, empty_output, empty_artifact, process_error}` AND `attempt < max_attempts` AND mission still RUNNING.
 
 Non-retryable: `denied`, `out_of_scope`, `wildcard_detected`, `invalid_params`, `unavailable` (tool missing — do not hammer).
 

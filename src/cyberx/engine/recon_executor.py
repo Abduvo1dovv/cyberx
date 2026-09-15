@@ -72,7 +72,10 @@ class ReconExecutor:
             raise ExecutionBypassError("policy did not allow this action")
         action = authorized.action
         adapter = self._adapter_for(action.action_type)
-        workdir = Path(self._data_dir) / "missions" / action.mission_id
+        workdir = Path(self._data_dir).expanduser()
+        if not workdir.is_absolute():
+            workdir = Path.cwd() / workdir
+        workdir = (workdir.resolve() / "missions" / action.mission_id)
         workdir.mkdir(parents=True, exist_ok=True)
         context = ctx or ExecutionContext(
             mission_id=action.mission_id,
@@ -195,18 +198,23 @@ def _status_for(
             return ActionResultStatus.FAILED, str(error), False, False, 1
         return ActionResultStatus.COMPLETED, None, False, False, 0
     if adapter.name == "nmap_adapter":
-        parseable = bool(artifact.body) and b"<nmaprun" in artifact.body
+        # nmap -oX writes XML to a file. Empty stdout is normal and not a failure.
+        body = artifact.body or b""
+        parseable = b"<nmaprun" in body
         if timed_out:
             return ActionResultStatus.TIMEOUT, "timeout", False, True, -1
         if exit_code == 127:
             return ActionResultStatus.UNAVAILABLE, "adapter_unavailable", True, False, 127
-        if looks_like_process_error(getattr(meta, "stderr", b"") if meta is not None else b""):
-            if parseable:
-                return ActionResultStatus.COMPLETED, None, False, False, exit_code
-            return ActionResultStatus.FAILED, "process_error", False, False, exit_code
         if parseable:
             return ActionResultStatus.COMPLETED, None, False, False, exit_code
-        if artifact.byte_size == 0:
-            return ActionResultStatus.FAILED, "empty_output", False, False, exit_code
+        stderr = getattr(meta, "stderr", b"") if meta is not None else b""
+        if looks_like_process_error(stderr):
+            return ActionResultStatus.FAILED, "process_error", False, False, exit_code
+        if body and not parseable:
+            return ActionResultStatus.FAILED, "invalid_output", False, False, exit_code
+        if exit_code not in {0, None}:
+            return ActionResultStatus.FAILED, "process_error", False, False, exit_code
+        if artifact.byte_size == 0 or not body:
+            return ActionResultStatus.FAILED, "empty_artifact", False, False, exit_code
         return ActionResultStatus.FAILED, "invalid_output", False, False, exit_code
     return ActionResultStatus.COMPLETED, None, False, False, 0

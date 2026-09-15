@@ -44,7 +44,7 @@ def apply_completed_artifact(
         )
         append_event(mission_id, TimelineKind.ERROR, f"parse failed: {exc.code}")
         world.record_coverage(coverage_key, "failed")
-        return 0, "failed", False
+        return 0, "parse_error", False
 
     emit_safe(
         events,

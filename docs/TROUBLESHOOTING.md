@@ -111,6 +111,37 @@ policy (`attempt 1/2`).
 
 ---
 
+## 5b. port_scan FAILED reason=empty_output / empty_artifact
+
+**Symptom:**
+
+```
+port_scan FAILED
+reason=empty_output
+attempt=1/2
+```
+
+Manual `nmap -4 -Pn -e tun0 -n -sT --top-ports 1000 <target>` works.
+
+**Likely cause:** Nmap was invoked with `-oX <path>` and `cwd=<mission workdir>`.
+If the XML path was relative, Nmap wrote `workdir/<relative path>` while
+CyberX read `<relative path>` from the process cwd. Stdout is empty on
+purpose (`-oX`); that is not a scan failure.
+
+**Diagnostic:** DEBUG log `cyberx.nmap` (`CYBERX_LOG_LEVEL=DEBUG`) shows
+`cwd`, `xml`, and `argv`. Confirm `-oX` is an **absolute** path and the file
+contains `<nmaprun`.
+
+**CyberX response:** `-oX` is always absolute. Success is
+`returncode` + non-empty parseable XML, **not** stdout. Missing/empty XML is
+`empty_artifact`. Malformed XML is `invalid_output`. Parser failure is
+`parse_error`. None of these complete coverage or invent ports.
+
+**Operator action:** Resume the mission after upgrade. Do not add `sudo` to
+CyberX. TCP connect (`-sT`) does not require root.
+
+---
+
 ## 6. IPv4 / IPv6 mismatch
 
 **Symptom:** IPv6 target with IPv4 flags, or IPv4 target attempting `fe80`.
