@@ -170,9 +170,10 @@ def collect_findings(world: Any) -> list[Finding]:
         if not evidence_ids:
             evidence_ids = world.evidence_ids_for_subject_key(url.canonical_key)
         path = url.path or "/"
-        listing = classify_title(url.title)
+        missing = url.status_code in {404, 410}
+        listing = None if missing else classify_title(url.title)
         http_signal = classify_http_status(url.status_code, path)
-        path_signal = classify_path(path)
+        path_signal = None if missing else classify_path(path)
         signals: list[tuple[str, FindingKind, FindingSeverity, str]] = []
         if listing:
             signals.append(

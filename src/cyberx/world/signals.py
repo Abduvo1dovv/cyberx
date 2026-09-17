@@ -157,6 +157,8 @@ def classify_http_status(status: int | None, path: str = "/") -> str | None:
         return None
     if 500 <= int(status) <= 599:
         return "unusual_status"
+    if int(status) in {404, 410}:
+        return None
     if int(status) in _REDIRECT_STATUS:
         return "unusual_redirect"
     return classify_path(path)

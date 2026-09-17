@@ -102,6 +102,30 @@ def test_nxdomain_and_timeout_payloads(tmp_path) -> None:
     assert adapter._last_result.timed_out is True
 
 
+def test_empty_noerror_is_not_ok_status(tmp_path) -> None:
+    from cyberx.recon.dns.adapter import DNS_RECORD_TYPES
+
+    resolver = FixtureDnsResolver()
+    for rtype in DNS_RECORD_TYPES:
+        resolver.add("empty.box.htb", rtype)
+    adapter = DnsAdapter(resolver=resolver)
+    action = _action("dns_enumeration", "empty.box.htb")
+    ctx = ExecutionContext(
+        mission_id=action.mission_id,
+        action_id=action.action_id,
+        timeout_s=5,
+        workdir=str(tmp_path),
+        allowed_targets=["box.htb", "empty.box.htb"],
+        allow_subdomains=True,
+    )
+    artifact = adapter.run(action, ctx)
+    body = json.loads(artifact.body or b"{}")
+    assert body["status"] == "empty"
+    assert body["records"] == []
+    assert adapter._last_result is not None
+    assert adapter._last_result.error is None
+
+
 def test_subdomain_adapter_respects_limit_and_scope(tmp_path) -> None:
     resolver = FixtureDnsResolver()
     resolver.add("www.box.htb", "A", "10.10.10.10")

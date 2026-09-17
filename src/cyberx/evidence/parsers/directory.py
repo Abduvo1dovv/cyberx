@@ -81,8 +81,9 @@ def observations_from_directory_payload(
             extra["title"] = str(extra_src["title"])[:128]
         if extra_src.get("wildcard_detected"):
             extra["wildcard_detected"] = True
+        not_found = extra.get("classification") == "not_found" or status in {404, 410}
         marker = (ukey, "url.seen")
-        if marker not in seen:
+        if marker not in seen and not not_found:
             seen.add(marker)
             out.append(
                 emit(

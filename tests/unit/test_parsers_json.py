@@ -135,10 +135,7 @@ def test_directory_paths_and_404() -> None:
     assert {"predicate": "url.seen", "subject_hint": admin, "object": admin} in got
     assert {"predicate": "http.status", "subject_hint": admin, "object": 401} in got
     assert {"predicate": "http.status", "subject_hint": nope, "object": 404} in got
-    four_oh_four = next(
-        o for o in observations if o.subject_hint == nope and o.predicate == "url.seen"
-    )
-    assert four_oh_four.extra["status"] == 404
+    assert {"predicate": "url.seen", "subject_hint": nope, "object": nope} not in got
 
 
 def test_technology_parser() -> None:

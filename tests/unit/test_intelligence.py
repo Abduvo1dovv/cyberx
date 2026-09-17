@@ -53,6 +53,8 @@ def test_path_classification_is_conservative() -> None:
     assert classify_path("/debug") == "debug_surface"
     assert classify_path("/") is None
     assert classify_http_status(403, "/admin") == "admin_surface"
+    assert classify_http_status(404, "/admin") is None
+    assert classify_http_status(410, "/backup") is None
     assert classify_http_status(301, "/uploads") == "unusual_redirect"
     assert classify_http_status(500, "/") == "unusual_status"
     assert classify_port(22) == "exposed_service"

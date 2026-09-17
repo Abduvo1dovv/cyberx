@@ -55,5 +55,6 @@ tsconfig.json
 eslint.config.mjs
 .prettierrc
 AGENTS.md
+AGENTS.project.md
 screenshots/
 artifacts/

@@ -57,6 +57,19 @@ def build_report(
     graph = GraphProjector().project(snap, validation_candidates=candidates)
     paths = PathPlanner().plan(graph, snap, validation_candidates=candidates)
     open_gaps = [g for g in snap.gaps if not g.closed]
+    ports_unknown = any(g.kind == "host.ports_unknown" and not g.closed for g in open_gaps)
+    failed_traces = [
+        t
+        for t in traces
+        if (t.execution_status or "")
+        in {"failed", "timeout", "unavailable", "parse_error", "denied"}
+    ]
+    if ports_unknown:
+        enum_label = "ports unknown — enumeration incomplete"
+    elif open_gaps or failed_traces:
+        enum_label = "partial — unresolved gaps or failed actions remain"
+    else:
+        enum_label = "no open knowledge gaps (not a completeness guarantee)"
     facts = [
         f
         for f in snap.findings
@@ -109,6 +122,13 @@ def build_report(
             "allow_subdomains": scope.allow_subdomains,
         },
         "network": network.compact() if network is not None else {},
+        "enumeration": {
+            "ports_unknown": ports_unknown,
+            "recon_incomplete": bool(ports_unknown or open_gaps or failed_traces),
+            "open_gap_count": len(open_gaps),
+            "failed_action_count": len(failed_traces),
+            "label": enum_label,
+        },
         "assets": {
             "hosts": len(snap.hosts),
             "ports": len(snap.ports),
@@ -320,6 +340,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
             f"- Route: {network.get('route') or '-'}",
             f"- Tunnel: {network.get('tunnel') or 'none'} (heuristic, unverified)",
             "",
+            "## Enumeration status",
+            f"- {payload.get('enumeration', {}).get('label', 'unknown')}",
+            f"- Ports unknown: {payload.get('enumeration', {}).get('ports_unknown', False)}",
+            f"- Recon incomplete: {payload.get('enumeration', {}).get('recon_incomplete', True)}",
+            "",
             "## Assets",
         ]
     )
@@ -328,7 +353,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
     lines.extend(["", "## Hosts"])
     _bullets(lines, payload.get("hosts") or [], _fmt_host)
     lines.extend(["", "## Ports"])
-    _bullets(lines, payload.get("ports") or [], _fmt_port)
+    if payload.get("enumeration", {}).get("ports_unknown") and not payload.get("ports"):
+        lines.append("- ports unknown (unobserved)")
+    else:
+        _bullets(lines, payload.get("ports") or [], _fmt_port)
     lines.extend(["", "## Services"])
     _bullets(lines, payload.get("services") or [], _fmt_service)
     lines.extend(["", "## Technologies"])

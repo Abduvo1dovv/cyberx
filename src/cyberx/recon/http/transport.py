@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ class HttpRawResponse:
     error: str | None = None
     tls_enabled: bool = False
     tls_version: str | None = None
+    cert_verified: bool | None = None
+    tls_error: str | None = None
 
 
 @dataclass
@@ -45,13 +48,57 @@ class StdlibTransport:
             "Accept-Encoding": "identity",
             "Connection": "close",
         }
+        if spec.scheme != "https":
+            return self._exchange(spec, headers, context=None, cert_verified=None)
+        ip_literal = _is_ip_literal(spec.host)
+        context = _ssl_context(verify=spec.tls_verify, ip_literal=ip_literal)
+        try:
+            return self._exchange(
+                spec,
+                headers,
+                context=context,
+                cert_verified=True if spec.tls_verify else False,
+            )
+        except ssl.SSLCertVerificationError as exc:
+            del exc
+            if not spec.tls_verify:
+                return HttpRawResponse(url=spec.url, error="tls_failure", tls_enabled=True)
+            try:
+                fallback = _ssl_context(verify=False, ip_literal=True)
+                return self._exchange(
+                    spec,
+                    headers,
+                    context=fallback,
+                    cert_verified=False,
+                    tls_error="certificate_verification_failure",
+                )
+            except ssl.SSLError:
+                return HttpRawResponse(url=spec.url, error="tls_failure", tls_enabled=True)
+            except TimeoutError:
+                return HttpRawResponse(
+                    url=spec.url, timed_out=True, error="timeout", tls_enabled=True
+                )
+            except OSError as retry_exc:
+                return _os_error_response(spec.url, retry_exc, tls_enabled=True)
+        except ssl.SSLError:
+            return HttpRawResponse(url=spec.url, error="tls_failure", tls_enabled=True)
+        except TimeoutError:
+            return HttpRawResponse(url=spec.url, timed_out=True, error="timeout", tls_enabled=True)
+        except OSError as exc:
+            return _os_error_response(spec.url, exc, tls_enabled=True)
+
+    def _exchange(
+        self,
+        spec: PreparedRequest,
+        headers: dict[str, str],
+        *,
+        context: ssl.SSLContext | None,
+        cert_verified: bool | None,
+        tls_error: str | None = None,
+    ) -> HttpRawResponse:
         conn: http.client.HTTPConnection | None = None
         try:
             if spec.scheme == "https":
-                context = ssl.create_default_context()
-                if not spec.tls_verify:
-                    context.check_hostname = False
-                    context.verify_mode = ssl.CERT_NONE
                 conn = http.client.HTTPSConnection(
                     spec.host,
                     spec.port,
@@ -64,11 +111,7 @@ class StdlibTransport:
             resp = conn.getresponse()
             body, truncated = _read_capped(resp, spec.max_body)
             raw_headers = {k.lower(): v for k, v in resp.getheaders()}
-            tls_version = None
-            if spec.scheme == "https" and getattr(conn, "sock", None) is not None:
-                tls_obj = getattr(conn.sock, "version", None)
-                if callable(tls_obj):
-                    tls_version = tls_obj()
+            tls_version = _tls_version(conn) if spec.scheme == "https" else None
             return HttpRawResponse(
                 url=spec.url,
                 status=int(resp.status),
@@ -77,18 +120,24 @@ class StdlibTransport:
                 truncated=truncated,
                 tls_enabled=spec.scheme == "https",
                 tls_version=tls_version,
+                cert_verified=cert_verified if spec.scheme == "https" else None,
+                tls_error=tls_error if spec.scheme == "https" else None,
             )
         except TimeoutError:
-            return HttpRawResponse(url=spec.url, timed_out=True, error="timeout")
+            return HttpRawResponse(
+                url=spec.url,
+                timed_out=True,
+                error="timeout",
+                tls_enabled=spec.scheme == "https",
+            )
+        except ssl.SSLCertVerificationError:
+            raise
         except ssl.SSLError:
+            if spec.scheme == "https":
+                raise
             return HttpRawResponse(url=spec.url, error="tls_failure")
         except OSError as exc:
-            name = type(exc).__name__
-            if name in {"timeout", "TimeoutError"} or "timed out" in str(exc).lower():
-                return HttpRawResponse(url=spec.url, timed_out=True, error="timeout")
-            if name == "gaierror" or "name or service not known" in str(exc).lower():
-                return HttpRawResponse(url=spec.url, error="dns_failure")
-            return HttpRawResponse(url=spec.url, error="connect_failure")
+            return _os_error_response(spec.url, exc, tls_enabled=spec.scheme == "https")
         finally:
             if conn is not None:
                 try:
@@ -127,7 +176,53 @@ class FixtureTransport:
             error=hit.error,
             tls_enabled=hit.tls_enabled or spec.scheme == "https",
             tls_version=hit.tls_version,
+            cert_verified=hit.cert_verified,
+            tls_error=hit.tls_error,
         )
+
+
+def _ssl_context(*, verify: bool, ip_literal: bool) -> ssl.SSLContext:
+    """CTF IP targets almost never match the certificate hostname (CN)."""
+    context = ssl.create_default_context()
+    if not verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    if ip_literal:
+        context.check_hostname = False
+    return context
+
+
+def _is_ip_literal(host: str) -> bool:
+    text = (host or "").strip().strip("[]")
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _tls_version(conn: http.client.HTTPConnection) -> str | None:
+    sock = getattr(conn, "sock", None)
+    if sock is None:
+        return None
+    version = getattr(sock, "version", None)
+    if callable(version):
+        try:
+            value = version()
+        except (OSError, ValueError, ssl.SSLError):
+            return None
+        return str(value) if value else None
+    return None
+
+
+def _os_error_response(url: str, exc: OSError, *, tls_enabled: bool) -> HttpRawResponse:
+    name = type(exc).__name__
+    if name in {"timeout", "TimeoutError"} or "timed out" in str(exc).lower():
+        return HttpRawResponse(url=url, timed_out=True, error="timeout", tls_enabled=tls_enabled)
+    if name == "gaierror" or "name or service not known" in str(exc).lower():
+        return HttpRawResponse(url=url, error="dns_failure", tls_enabled=tls_enabled)
+    return HttpRawResponse(url=url, error="connect_failure", tls_enabled=tls_enabled)
 
 
 def _read_capped(resp: http.client.HTTPResponse, max_body: int) -> tuple[bytes, bool]:

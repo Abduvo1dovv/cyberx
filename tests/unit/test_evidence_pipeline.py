@@ -20,7 +20,7 @@ from cyberx.domain.models.actions import ActionRequest, ActionTarget
 from cyberx.domain.models.evidence import Observation
 from cyberx.domain.time import utcnow
 from cyberx.engine.boundary import ExecutionBoundary
-from cyberx.evidence.factory import EvidenceFactory, reliability_for
+from cyberx.evidence.factory import EvidenceFactory
 from cyberx.evidence.parsers.stub import StubParser
 from cyberx.evidence.pipeline import EvidencePipeline
 from cyberx.evidence.registry import LEGAL_PARSER_IDS, ParserRegistry
@@ -97,19 +97,20 @@ def test_directory_404_reliability() -> None:
         media_type="application/json",
     )
     observations, evidence = EvidencePipeline().normalize(artifact)
-    nope = next(
+    nope_seen = [
         e
         for e in evidence
         if e.claim_preview["predicate"] == "url.seen" and "nope" in e.claim_preview["subject_hint"]
-    )
+    ]
+    assert nope_seen == []
     admin = next(
         e
         for e in evidence
         if e.claim_preview["predicate"] == "url.seen" and "admin" in e.claim_preview["subject_hint"]
     )
-    assert nope.reliability == 0.40
     assert admin.reliability == 0.85
-    assert reliability_for(next(o for o in observations if o.extra.get("status") == 404)) == 0.40
+    missing = next(o for o in observations if o.predicate == "http.status" and o.object == 404)
+    assert missing.subject_hint.endswith("/nope")
 
 
 def test_unmapped_predicate_stored_not_a_fact() -> None:

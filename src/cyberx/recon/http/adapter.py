@@ -145,7 +145,9 @@ class HttpAdapter:
         hops = 0
         redirects: list[dict[str, Any]] = []
         last = HttpRawResponse(url=current, error="empty")
+        last_good: HttpRawResponse | None = None
         timeout_s = max(1, int(ctx.timeout_s or 30))
+        visited: set[str] = set()
         while hops <= self._max_redirects:
             spec = prepare_get(
                 current,
@@ -155,12 +157,22 @@ class HttpAdapter:
                 user_agent=self._user_agent,
             )
             last = self._transport.request(spec)
-            if last.timed_out:
-                self._last_result = HttpCallMeta(timed_out=True, error="timeout", exit_code=-1)
-                return _empty_payload(current, error="timeout")
-            if last.error and last.status == 0:
-                self._last_result = HttpCallMeta(error=last.error, exit_code=1)
-                return _empty_payload(current, error=last.error)
+            if last.timed_out or (last.error and last.status == 0):
+                if last_good is not None:
+                    if redirects:
+                        redirects[-1]["followed"] = False
+                        redirects[-1]["error"] = last.error
+                    last = last_good
+                    current = last_good.url
+                    break
+                self._last_result = HttpCallMeta(
+                    timed_out=bool(last.timed_out),
+                    error=last.error or ("timeout" if last.timed_out else "empty"),
+                    exit_code=-1 if last.timed_out else 1,
+                )
+                return _empty_payload(current, error=last.error or "empty")
+            last_good = last
+            visited.add(current)
             location = (last.headers or {}).get("location")
             if last.status in {301, 302, 303, 307, 308} and location:
                 try:
@@ -170,16 +182,18 @@ class HttpAdapter:
                         {"from": current, "to": location, "status": last.status, "followed": False}
                     )
                     break
+                looped = nxt in visited
                 allowed = destination_allowed(nxt, origin_host=origin_host, ctx=ctx)
-                followed = bool(allowed) and hops < self._max_redirects
-                redirects.append(
-                    {
-                        "from": current,
-                        "to": nxt,
-                        "status": last.status,
-                        "followed": followed,
-                    }
-                )
+                followed = bool(allowed) and hops < self._max_redirects and not looped
+                row: dict[str, Any] = {
+                    "from": current,
+                    "to": nxt,
+                    "status": last.status,
+                    "followed": followed,
+                }
+                if looped:
+                    row["error"] = "redirect_loop"
+                redirects.append(row)
                 if not allowed:
                     emit_safe(
                         self._events,
@@ -269,7 +283,12 @@ def _payload_from_response(
         "body": body_text,
         "body_hash": digest,
         "truncated": resp.truncated,
-        "tls": {"enabled": resp.tls_enabled, "version": resp.tls_version},
+        "tls": {
+            "enabled": resp.tls_enabled,
+            "version": resp.tls_version,
+            "verified": resp.cert_verified,
+            "error": resp.tls_error,
+        },
         "error": resp.error,
     }
 

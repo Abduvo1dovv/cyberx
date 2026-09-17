@@ -193,6 +193,12 @@ def _status_for(
         if error == "timeout":
             return ActionResultStatus.TIMEOUT, "timeout", False, True, -1
         if error in {"connect_failure", "dns_failure", "tls_failure", "out_of_scope"}:
+            if status_code:
+                return ActionResultStatus.COMPLETED, None, False, False, 0
+            return ActionResultStatus.FAILED, error, False, False, 1
+        if error == "certificate_verification_failure":
+            if status_code:
+                return ActionResultStatus.COMPLETED, None, False, False, 0
             return ActionResultStatus.FAILED, error, False, False, 1
         if status_code is None and error:
             return ActionResultStatus.FAILED, str(error), False, False, 1

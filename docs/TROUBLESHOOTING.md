@@ -159,6 +159,28 @@ support IPv6 enumeration.
 
 ---
 
+## 6b. http_probe FAILED reason=tls_failure on HTTP 301 / IP HTTPS
+
+**Symptom:** `curl` shows `HTTP/1.1 301` (and HTTPS handshake works with
+`-vk`) but CyberX reports `tls_failure` for `http://<ip>:80/` and
+`https://<ip>:443/`.
+
+**Likely cause:** HTTP 301 to HTTPS was followed, then certificate
+hostname/CA mismatch (`CN=management.htb` vs IP) was collapsed into
+`tls_failure`, discarding the HTTP response.
+
+**CyberX response:** 3xx is HTTP evidence. Certificate verification failure
+is not a TLS handshake failure. IP-target HTTPS retries unverified after
+`SSLCertVerificationError` and records `tls.verified=false`. Out-of-scope
+`Location` hosts (e.g. `management.htb`) are recorded, not followed, and
+are not auto-promoted to the current locator.
+
+**Operator action:** Treat `Location: https://management.htb/` as a hostname
+hint. Add it only via the existing operator confirm-locator path if in
+scope.
+
+---
+
 ## 7. HTTP timeout
 
 **Symptom:** `http_probe` TIMEOUT / `connect_failure`.

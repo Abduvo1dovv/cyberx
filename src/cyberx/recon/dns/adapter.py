@@ -258,10 +258,13 @@ def _records_payload(fqdn: str, answers: list[DnsAnswer]) -> dict[str, Any]:
     status = "ok"
     if answers and all(a.timed_out for a in answers):
         status = "timeout"
-    elif answers and answers[0].rcode == "NXDOMAIN" and not records:
-        status = "nxdomain"
-    elif answers and not records and any(a.rcode == "SERVFAIL" for a in answers):
-        status = "servfail"
+    elif answers and not records:
+        if any(a.rcode == "NXDOMAIN" for a in answers):
+            status = "nxdomain"
+        elif any(a.rcode == "SERVFAIL" for a in answers):
+            status = "servfail"
+        else:
+            status = "empty"
     return {
         "fqdn": fqdn,
         "status": status,

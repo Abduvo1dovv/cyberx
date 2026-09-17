@@ -222,6 +222,322 @@ def test_executor_rejects_raw_action(tmp_path) -> None:
         executor.execute(_action())  # type: ignore[arg-type]
 
 
+def test_http_301_port_80_is_success_not_tls_failure(tmp_path) -> None:
+    transport = FixtureTransport(
+        HttpRawResponse(
+            url="http://10.10.11.23/",
+            status=301,
+            headers={
+                "server": "nginx/1.24.0 (Ubuntu)",
+                "location": "https://10.10.11.23/",
+            },
+        )
+    )
+    adapter = HttpAdapter(transport=transport)
+    action = _action("http://10.10.11.23/")
+    ctx = _ctx(action, tmp_path, allowed_targets=["10.10.11.23"], allowed_protocols=["http"])
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "tls_failure"
+    body = (outcome.artifact.body or b"").decode("utf-8")
+    assert '"status":301' in body
+    assert "https://10.10.11.23/" in body
+    assert "nginx/1.24.0" in body
+    assert len(transport.calls) == 1
+
+
+def test_https_301_on_443_is_success(tmp_path) -> None:
+    transport = FixtureTransport(
+        HttpRawResponse(
+            url="https://10.10.11.23/",
+            status=301,
+            headers={
+                "server": "nginx/1.24.0 (Ubuntu)",
+                "location": "https://evil.example/",
+            },
+            tls_enabled=True,
+            tls_version="TLSv1.3",
+            cert_verified=False,
+            tls_error="certificate_verification_failure",
+        )
+    )
+    adapter = HttpAdapter(transport=transport)
+    action = _action("https://10.10.11.23/")
+    ctx = _ctx(
+        action,
+        tmp_path,
+        allowed_targets=["10.10.11.23"],
+        allowed_protocols=["http", "https"],
+    )
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "tls_failure"
+    payload = (outcome.artifact.body or b"").decode("utf-8")
+    assert '"status":301' in payload
+    assert "evil.example" in payload
+    assert '"followed":false' in payload or '"followed": false' in payload
+    assert len(transport.calls) == 1
+    assert all("evil.example" not in c.url for c in transport.calls)
+
+
+def test_http_to_https_redirect_then_hostname_not_followed(tmp_path) -> None:
+    transport = FixtureTransport(
+        {
+            "http://10.10.11.23/": HttpRawResponse(
+                url="http://10.10.11.23/",
+                status=301,
+                headers={
+                    "server": "nginx/1.24.0 (Ubuntu)",
+                    "location": "https://10.10.11.23/",
+                },
+            ),
+            "https://10.10.11.23/": HttpRawResponse(
+                url="https://10.10.11.23/",
+                status=301,
+                headers={
+                    "server": "nginx/1.24.0 (Ubuntu)",
+                    "location": "https://evil.example/",
+                },
+                tls_enabled=True,
+                tls_version="TLSv1.3",
+                cert_verified=False,
+                tls_error="certificate_verification_failure",
+            ),
+        }
+    )
+    sink = InMemoryEventSink()
+    adapter = HttpAdapter(transport=transport, events=sink)
+    action = _action("http://10.10.11.23/")
+    ctx = _ctx(
+        action,
+        tmp_path,
+        allowed_targets=["10.10.11.23"],
+        allowed_protocols=["http", "https"],
+    )
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "tls_failure"
+    assert [c.url for c in transport.calls] == [
+        "http://10.10.11.23/",
+        "https://10.10.11.23/",
+    ]
+    payload = (outcome.artifact.body or b"").decode("utf-8")
+    assert "https://evil.example/" in payload
+    assert EventType.HTTP_REDIRECT_BLOCKED in {e.event_type for e in sink.events}
+    assert EventType.HTTP_COMPLETED in {e.event_type for e in sink.events}
+
+
+def test_http_301_kept_if_https_follow_fails(tmp_path) -> None:
+    transport = FixtureTransport(
+        {
+            "http://10.10.11.23/": HttpRawResponse(
+                url="http://10.10.11.23/",
+                status=301,
+                headers={"location": "https://10.10.11.23/"},
+            ),
+            "https://10.10.11.23/": HttpRawResponse(
+                url="https://10.10.11.23/",
+                error="tls_failure",
+                tls_enabled=True,
+            ),
+        }
+    )
+    adapter = HttpAdapter(transport=transport)
+    action = _action("http://10.10.11.23/")
+    ctx = _ctx(
+        action,
+        tmp_path,
+        allowed_targets=["10.10.11.23"],
+        allowed_protocols=["http", "https"],
+    )
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "tls_failure"
+    payload = (outcome.artifact.body or b"").decode("utf-8")
+    assert '"status":301' in payload
+    assert '"followed":false' in payload or '"followed": false' in payload
+
+
+def test_untrusted_https_certificate_is_not_tls_failure(monkeypatch, tmp_path) -> None:
+    import http.client
+    import ssl
+
+    from cyberx.recon.http.request import prepare_get
+    from cyberx.recon.http.transport import StdlibTransport
+
+    class FakeSock:
+        def version(self) -> str:
+            return "TLSv1.3"
+
+    class FakeHTTPS:
+        def __init__(
+            self,
+            host,
+            port=None,
+            timeout=None,
+            source_address=None,
+            context=None,
+            **kwargs,
+        ) -> None:
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.context = context
+            self.sock = FakeSock()
+            del source_address, kwargs
+
+        def request(self, *args, **kwargs) -> None:
+            del args, kwargs
+            mode = getattr(self.context, "verify_mode", ssl.CERT_NONE)
+            if mode != ssl.CERT_NONE:
+                raise ssl.SSLCertVerificationError(
+                    "certificate verify failed: self-signed certificate"
+                )
+
+        def getresponse(self):
+            class _Resp:
+                status = 301
+
+                def getheaders(self):
+                    return [
+                        ("Location", "https://evil.example/"),
+                        ("Server", "nginx/1.24.0 (Ubuntu)"),
+                    ]
+
+                def read(self, n=-1):
+                    del n
+                    return b""
+
+            return _Resp()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeHTTPS)
+    transport = StdlibTransport()
+    spec = prepare_get(
+        "https://10.10.11.23/",
+        timeout_s=10,
+        max_body=1024,
+        tls_verify=True,
+        user_agent="CyberX/1.0",
+    )
+    raw = transport.request(spec)
+    assert raw.error is None
+    assert raw.status == 301
+    assert raw.headers.get("location") == "https://evil.example/"
+    assert raw.cert_verified is False
+    assert raw.tls_error == "certificate_verification_failure"
+    assert raw.tls_enabled is True
+
+    adapter = HttpAdapter(transport=transport)
+    action = _action("https://10.10.11.23/")
+    ctx = _ctx(
+        action,
+        tmp_path,
+        allowed_targets=["10.10.11.23"],
+        allowed_protocols=["https"],
+    )
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.COMPLETED
+    assert outcome.result.error_code != "tls_failure"
+
+
+def test_tls_handshake_failure_remains_tls_failure(monkeypatch, tmp_path) -> None:
+    import http.client
+    import ssl
+
+    from cyberx.recon.http.request import prepare_get
+    from cyberx.recon.http.transport import StdlibTransport
+
+    class BoomHTTPS:
+        def __init__(self, host, port=None, timeout=None, context=None, **kwargs) -> None:
+            del host, port, timeout, kwargs
+            self.context = context
+
+        def request(self, *args, **kwargs) -> None:
+            del args, kwargs
+            raise ssl.SSLError("TLSV1_ALERT_HANDSHAKE_FAILURE")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(http.client, "HTTPSConnection", BoomHTTPS)
+    raw = StdlibTransport().request(
+        prepare_get(
+            "https://10.10.11.23/",
+            timeout_s=10,
+            max_body=1024,
+            tls_verify=True,
+            user_agent="CyberX/1.0",
+        )
+    )
+    assert raw.error == "tls_failure"
+    assert raw.status == 0
+    adapter = HttpAdapter(transport=StdlibTransport())
+    action = _action("https://10.10.11.23/")
+    executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+    ctx = _ctx(
+        action,
+        tmp_path,
+        allowed_targets=["10.10.11.23"],
+        allowed_protocols=["https"],
+    )
+    outcome = executor.execute(_authorized(action), ctx)
+    assert outcome.result.status is ActionResultStatus.FAILED
+    assert outcome.result.error_code == "tls_failure"
+
+
+def test_http_4xx_and_5xx_are_successful_observations(tmp_path) -> None:
+    for code in (403, 404, 500):
+        transport = FixtureTransport(
+            HttpRawResponse(
+                url="http://10.10.11.23/",
+                status=code,
+                headers={"server": "nginx", "content-type": "text/html"},
+                body=b"x",
+            )
+        )
+        adapter = HttpAdapter(transport=transport)
+        action = _action()
+        executor = ReconExecutor(http=adapter, http_enabled=True, data_dir=str(tmp_path))
+        outcome = executor.execute(_authorized(action), _ctx(action, tmp_path))
+        assert outcome.result.status is ActionResultStatus.COMPLETED, code
+        assert outcome.result.error_code is None, code
+        assert f'"status":{code}' in (outcome.artifact.body or b"").decode("utf-8")
+
+
+def test_redirect_loop_stops_and_keeps_last_good(tmp_path) -> None:
+    transport = FixtureTransport(
+        {
+            "http://10.10.11.23/a": HttpRawResponse(
+                url="http://10.10.11.23/a",
+                status=302,
+                headers={"location": "http://10.10.11.23/b"},
+            ),
+            "http://10.10.11.23/b": HttpRawResponse(
+                url="http://10.10.11.23/b",
+                status=302,
+                headers={"location": "http://10.10.11.23/a"},
+            ),
+        }
+    )
+    adapter = HttpAdapter(transport=transport)
+    action = _action("http://10.10.11.23/a")
+    artifact = adapter.run(action, _ctx(action, tmp_path))
+    assert len(transport.calls) <= 3
+    body = (artifact.body or b"").decode("utf-8")
+    assert "redirect_loop" in body
+    assert '"followed":false' in body or '"followed": false' in body
+    assert adapter._last_result is not None
+    assert adapter._last_result.status in {302, 301}
+
+
 def test_tech_adapter_fingerprints_from_body(tmp_path) -> None:
     html = (FIXTURES / "http" / "html_200.html").read_bytes()
     transport = FixtureTransport(

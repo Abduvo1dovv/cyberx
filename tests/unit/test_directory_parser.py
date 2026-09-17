@@ -22,6 +22,7 @@ def test_mixed_paths_and_redirect_target() -> None:
     assert statuses["url:http://10.10.11.23:80/missing"] == 404
     urls = {o.object for o in obs if o.predicate == "url.seen"}
     assert "url:http://10.10.11.23:80/login" in urls
+    assert "url:http://10.10.11.23:80/missing" not in urls
     admin_seen = [o for o in obs if o.predicate == "url.seen" and o.object.endswith("/admin")]
     assert len(admin_seen) == 1
 
@@ -79,7 +80,44 @@ def test_world_dedup_and_gap_close() -> None:
     blob = " ".join(f.title.lower() for f in world.get_findings())
     assert "sql injection" not in blob
     assert "rce" not in blob
+    assert "404" not in blob
     _obs2, evidence2 = EvidencePipeline().normalize(artifact)
     for item in evidence2:
         world.apply_evidence(item)
     assert len([u for u in world.get_web_surfaces() if u.path == "/admin"]) == 1
+
+
+def test_directory_404_admin_is_not_a_finding() -> None:
+    import hashlib
+    import json
+
+    from cyberx.domain.ids import PREFIX_ARTIFACT, PREFIX_MISSION, PREFIX_TOOL_RUN, new_id
+    from cyberx.ports.execution import RawArtifact
+
+    world = InMemoryWorldModel(new_id(PREFIX_MISSION))
+    payload = {
+        "base_url": "http://10.10.11.23/",
+        "status": "ok",
+        "wildcard_detected": False,
+        "paths": [{"path": "/admin", "status": 404, "classification": "not_found"}],
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    artifact = RawArtifact(
+        artifact_id=new_id(PREFIX_ARTIFACT),
+        tool_run_id=new_id(PREFIX_TOOL_RUN),
+        adapter_name="directory_adapter",
+        media_type="application/json",
+        sha256=hashlib.sha256(raw).hexdigest(),
+        byte_size=len(raw),
+        body=raw,
+        mission_id=world.mission_id,
+        source_locator="http://10.10.11.23/",
+    )
+    _obs, evidence = EvidencePipeline().normalize(artifact)
+    for item in evidence:
+        world.apply_evidence(item)
+    blob = " ".join((f.title + " " + f.summary).lower() for f in world.get_findings())
+    assert "admin surface" not in blob
+    assert "admin" not in blob
+    statuses = {o.object for o in _obs if o.predicate == "http.status"}
+    assert 404 in statuses

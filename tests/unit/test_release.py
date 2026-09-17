@@ -121,7 +121,10 @@ def test_stub_mission_exports_report(tmp_path) -> None:
         assert payload["target"]["identity"]
         assert payload["target"]["current_locator"] == "10.10.11.23"
         assert payload["assets"]["hosts"] >= 1
+        assert "enumeration" in payload
+        assert "fully enumerated" not in payload["enumeration"]["label"].lower()
         assert "FACT" in markdown or "Findings" in markdown
+        assert "Enumeration status" in markdown
         assert "HYPOTHESIS" in markdown
         assert "UNKNOWN" in markdown or "Unresolved" in markdown
         lowered = markdown.lower()
@@ -130,3 +133,61 @@ def test_stub_mission_exports_report(tmp_path) -> None:
         assert "spawn a shell" not in lowered
     finally:
         app.close()
+
+
+def test_ports_unknown_report_does_not_say_none() -> None:
+    from cyberx.app.report import render_markdown
+
+    payload = {
+        "kind": "CyberX v1.0.0-ctf",
+        "version": "1.0.0-ctf",
+        "mission": {
+            "name": "t",
+            "mission_id": "m1",
+            "status": "COMPLETED",
+            "mode": "ctf",
+            "intent": "enumerate",
+            "iteration": 1,
+            "ai_provider": "none",
+            "stop_reason": "STALLED",
+        },
+        "target": {
+            "identity": "host:10.10.11.23",
+            "current_locator": "10.10.11.23",
+            "raw_input": "10.10.11.23",
+            "normalized": "10.10.11.23",
+            "kind": "ipv4",
+            "locator_history": [],
+        },
+        "scope": {"frozen": True, "allowed_targets": ["10.10.11.23"], "allowed_networks": []},
+        "network": {},
+        "enumeration": {
+            "label": "ports unknown — enumeration incomplete",
+            "ports_unknown": True,
+            "recon_incomplete": True,
+        },
+        "assets": {},
+        "hosts": [],
+        "ports": [],
+        "services": [],
+        "technologies": [],
+        "domains": [],
+        "subdomains": [],
+        "urls": [],
+        "endpoints": [],
+        "findings": [],
+        "hypotheses": [],
+        "validation_candidates": [],
+        "investigation_paths": [],
+        "evidence": [],
+        "unresolved_knowledge_gaps": [{"kind": "host.ports_unknown", "detail": "", "priority": 1}],
+        "recommended_next_investigation": [],
+        "actions_performed": [],
+        "timeline": [],
+        "invalidated_claims": [],
+    }
+    text = render_markdown(payload)
+    assert "ports unknown (unobserved)" in text
+    ports_block = text.split("## Ports", 1)[1].split("## ", 1)[0]
+    assert "(none)" not in ports_block
+    assert "fully enumerated" not in text.lower()
